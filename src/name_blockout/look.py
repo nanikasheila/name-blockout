@@ -17,6 +17,11 @@ are hours of solar time, set from that day's sunrise and sunset:
 
 Without a date the spring equinox (03-21) stands, without a place Tokyo, and
 without north +Y; each is noted as an assumption.
+
+Indoors (look.setting "indoor", or guessed from the words: a sofa, a room)
+there is no sun from the time of day: the light comes from where look.light.key
+says (a window, the ceiling's light, a street light outside), the ceiling's
+light when it says nothing.
 """
 
 from __future__ import annotations
@@ -50,8 +55,34 @@ KEY_DIRECTIONS = {
     "side-left": (90.0, 30.0),
     "side-right": (-90.0, 30.0),
     "top": (0.0, 80.0),
+    "window": (90.0, 20.0),  # through a window on the left: low and from the side
+    "interior": (0.0, 80.0),  # the ceiling's light: from above, soft
+    "street": (180.0, 55.0),  # a street light: high, from the camera's side
 }
-KEY_LABELS = {"front": "順光（カメラ側から）", "back": "逆光", "side-left": "左から", "side-right": "右から", "top": "真上から"}
+KEY_LABELS = {
+    "front": "順光（カメラ側から）",
+    "back": "逆光",
+    "side-left": "左から",
+    "side-right": "右から",
+    "top": "真上から",
+    "window": "窓から",
+    "interior": "天井の明かり",
+    "street": "街灯",
+}
+#: How wide the light looks (degrees: soft shadows) for the lights that are not the sun.
+KEY_ANGLES = {"window": 6.0, "interior": 30.0, "street": 3.0}
+#: Indoors: how strong the light is, and the light from outside (the sky's part).
+INDOOR_LIGHT = 3.0
+INDOOR_SKY = 0.25
+DEFAULT_INDOOR_KEY = "interior"
+
+SETTINGS = ("outdoor", "indoor")
+SETTING_LABELS = {"outdoor": "屋外", "indoor": "屋内"}
+#: Words that put a shot indoors (in its things' names, its brief, its place).
+INDOOR_WORDS = (
+    "部屋", "室内", "屋内", "居間", "リビング", "寝室", "台所", "キッチン", "教室", "廊下", "玄関", "店内", "車内",
+    "ソファ", "ベッド", "布団", "机", "椅子", "棚", "テレビ", "冷蔵庫", "本棚", "押し入れ", "畳", "床", "天井",
+)  # fmt: skip
 
 
 def day_of_year(date: str | None) -> int:
@@ -147,7 +178,45 @@ def norths_for_key(key: str, camera_heading: float, sun_azimuth: float) -> list[
     return [north for miss, north in sorted(out) if miss < 70]
 
 
-def lighting(look: dict | None, camera_heading: float) -> tuple[dict, list[dict]]:
+def indoor_words(shot: dict) -> list[str]:
+    """The words of a shot that say it is indoors."""
+    intent = shot.get("intent") or {}
+    texts = [o.get("label", "") for o in shot.get("objects") or []]
+    texts += [intent.get("brief", ""), (shot.get("place") or {}).get("note", ""), (shot.get("place") or {}).get("asset", "")]
+    found = []
+    for word in INDOOR_WORDS:
+        if any(word in (t or "") for t in texts) and word not in found:
+            found.append(word)
+    return found
+
+
+def setting_of(shot: dict) -> tuple[str, dict | None]:
+    """Indoors or out: as look.setting says, else indoors when its words say so (an assumption), else outdoors."""
+    given = (shot.get("look") or {}).get("setting")
+    if given in SETTINGS:
+        return given, None
+    words = indoor_words(shot)
+    if words:
+        note = f"屋内か屋外か決まっていないので、{'・'.join(words[:3])} から屋内"
+        return "indoor", {"path": "look.setting", "value": "indoor", "by": "tool", "note": note}
+    return "outdoor", None
+
+
+def _keyed(key: str, camera_heading: float, north: str, strength: float, angle: float) -> dict:
+    """A light from where `key` says, relative to the camera."""
+    rel, elevation = KEY_DIRECTIONS[key]
+    azimuth = (heading_azimuth(camera_heading, north) - rel) % 360.0 if key not in ("top", "interior") else 0.0
+    return {
+        "azimuthDeg": round(azimuth, 3),
+        "elevationDeg": elevation,
+        "direction": [round(v, 6) for v in world_direction(azimuth, elevation, north)],
+        "strength": strength,
+        "angleDeg": angle,
+        "side": key,
+    }
+
+
+def lighting(look: dict | None, camera_heading: float, setting: str = "outdoor") -> tuple[dict, list[dict]]:
     """The light of a shot in numbers, and the assumptions made for what the words leave open."""
     look = look or {}
     assumed: list[dict] = []
@@ -158,7 +227,28 @@ def lighting(look: dict | None, camera_heading: float) -> tuple[dict, list[dict]
     north = look.get("north") or DEFAULT_NORTH
     word = look.get("timeOfDay")
     key = (look.get("light") or {}).get("key")
-    out = {"weather": weather, "north": north, "timeOfDay": word, "sky": {"strength": w["sky"]}, "sun": None, "key": key}
+    out = {
+        "setting": setting,
+        "weather": weather,
+        "north": north,
+        "timeOfDay": word,
+        "sky": {"strength": w["sky"]},
+        "sun": None,
+        "key": key,
+    }
+    if setting == "indoor":
+        # Indoors: the light the author names (the ceiling's when none); a window gives no light at night.
+        if key not in KEY_DIRECTIONS:
+            key = DEFAULT_INDOOR_KEY
+            out["key"] = key
+            assumed.append({"path": "look.light.key", "value": key, "by": "tool", "note": "屋内の明かりが決まっていないので天井の明かり"})
+        if key == "window":
+            strength = 0.0 if word == "night" else INDOOR_LIGHT * (1.0 if w["direct"] else 0.5)
+        else:
+            strength = INDOOR_LIGHT
+        out["sky"]["strength"] = 0.0 if word in ("night", "dusk") else INDOOR_SKY
+        out["sun"] = _keyed(key, camera_heading, north, strength, KEY_ANGLES.get(key, w["angleDeg"] or 4.0))
+        return out, assumed
     if word:
         loc = look.get("location")
         if not loc:
@@ -192,14 +282,6 @@ def lighting(look: dict | None, camera_heading: float) -> tuple[dict, list[dict]
             }
     elif key in KEY_DIRECTIONS:
         # No time: the light comes from where the author says, relative to the camera.
-        rel, elevation = KEY_DIRECTIONS[key]
-        azimuth = (heading_azimuth(camera_heading, north) - rel) % 360.0 if key != "top" else 0.0
-        out["sun"] = {
-            "azimuthDeg": round(azimuth, 3),
-            "elevationDeg": elevation,
-            "direction": [round(v, 6) for v in world_direction(azimuth, elevation, north)],
-            "strength": w["sun"] if w["direct"] else 0.0,
-            "angleDeg": w["angleDeg"],
-            "side": key,
-        }
+        strength = (w["sun"] if w["direct"] else 0.0) if key not in KEY_ANGLES else INDOOR_LIGHT
+        out["sun"] = _keyed(key, camera_heading, north, strength, KEY_ANGLES.get(key, w["angleDeg"]))
     return out, assumed

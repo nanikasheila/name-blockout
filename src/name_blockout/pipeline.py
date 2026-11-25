@@ -57,7 +57,13 @@ def light_words(light: dict) -> str:
     """The light in a few words: 夕方・晴れ・太陽は左から 12°."""
     parts = [TIME_WORDS.get(light.get("timeOfDay"), ""), WEATHER_WORDS.get(light.get("weather"), "")]
     sun = light.get("sun")
-    if sun and sun.get("strength"):
+    if light.get("setting") == "indoor":
+        parts = ["屋内", TIME_WORDS.get(light.get("timeOfDay"), "")]
+        if sun and sun.get("strength"):
+            parts.append(f"明かりは{KEY_LABELS.get(sun.get('side'), '')}")
+        else:
+            parts.append("明かりなし")
+    elif sun and sun.get("strength"):
         parts.append(f"日差しは{KEY_LABELS.get(sun.get('side'), '')}・高さ {sun['elevationDeg']:.0f}°")
     elif light.get("timeOfDay"):
         parts.append("日差しなし")

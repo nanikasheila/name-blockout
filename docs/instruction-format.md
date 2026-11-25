@@ -64,7 +64,8 @@ name-blockout は定規から、ピンホールのカメラを次のように決
 | `timeOfDay` | 明け方 dawn・朝 morning・昼 noon・午後 afternoon・夕方 evening・日暮れ dusk・夜 night |
 | `date`・`location`・`north` | 日付（YYYY-MM-DD か MM-DD）・緯度経度・場所の座標で北の向き（+X・+Y・−X・−Y）。太陽の位置に使う |
 | `weather` | 晴れ clear・くもり cloudy・かすみ haze・どんより overcast・雨 rain・雪 snow・霧 fog |
-| `light.key` | 光の向きの狙い（順光 front・逆光 back・左から side-left・右から side-right・真上 top）。時間帯があれば照合に使い、なければその向きに光を置く |
+| `setting` | 屋外 outdoor・屋内 indoor。なければ言葉（ソファ・部屋・机など）から仮に決める |
+| `light.key` | 光の向きの狙い（順光 front・逆光 back・左から side-left・右から side-right・真上 top、窓から window・天井の明かり interior・街灯 street）。屋外で時間帯があれば照合に使い、なければその向きに光を置く。屋内はこの明かりで照らす（既定は天井） |
 | `materials` | `[{"target": 物の id か "ground", "material": ライブラリの名前}]` |
 
 数値への直し方と描き出しは [phases.md](phases.md#開発本番に近づける)。
