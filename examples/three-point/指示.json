@@ -1,0 +1,88 @@
+{
+ "$schema": "../../schema/v1/instruction.schema.json",
+ "format": "name-blockout/instruction",
+ "formatVersion": 1,
+ "createdBy": {
+  "app": "hand",
+  "version": "0"
+ },
+ "request": {
+  "id": "example-3pt",
+  "note": "例: 3点透視の見上げ"
+ },
+ "shots": [
+  {
+   "id": "panel1",
+   "frame": {
+    "boxMm": [
+     20.0,
+     20.0,
+     200.0,
+     200.0
+    ],
+    "dpi": 600.0
+   },
+   "ruler": {
+    "points": 3,
+    "horizonMm": [
+     [
+      20.0,
+      194.73
+     ],
+     [
+      200.0,
+      194.73
+     ]
+    ],
+    "vanishingMm": [
+     [
+      243.82,
+      194.73
+     ],
+     [
+      -67.76,
+      194.73
+     ],
+     [
+      115.08,
+      -132.08
+     ]
+    ]
+   },
+   "camera": {
+    "heightM": 1.6
+   },
+   "label": "p1 コマ1",
+   "page": 1,
+   "order": 1,
+   "intent": {
+    "brief": "ビルの谷間を見上げる",
+    "camera": "low"
+   },
+   "objects": [
+    {
+     "id": "o1",
+     "label": "ビル",
+     "shapeMm": [
+      [
+       30,
+       30
+      ],
+      [
+       110,
+       30
+      ],
+      [
+       110,
+       190
+      ],
+      [
+       30,
+       190
+      ]
+     ]
+    }
+   ]
+  }
+ ]
+}
