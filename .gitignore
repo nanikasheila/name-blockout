@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+.venv/
+dist/
+build/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+# What a run writes beside an example
+examples/*/案/
+examples/*/blockout/
+examples/*/依頼/
+examples/*/要求/
+examples/*/背景.json

@@ -1,0 +1,323 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/nanikasheila/name-blockout/schema/v1/instruction.schema.json",
+  "title": "背景の指示書（name-blockout instruction, v1）",
+  "description": "name-studio などのネームの道具が書き、name-blockout が読む。1 つの依頼（同時に頼んだコマの束）を 1 ファイルにする。座標は紙面の mm（用紙の左上が原点、右が x、下が y）。3D の長さは m。項目の意味とどのフェイズで使うかは docs/instruction-format.md。",
+  "type": "object",
+  "required": ["format", "formatVersion", "shots"],
+  "properties": {
+    "$schema": { "type": "string" },
+    "format": { "const": "name-blockout/instruction" },
+    "formatVersion": {
+      "description": "この形式の版。中身の意味が変わる変更で上がる。読む側は知らない版を断る。",
+      "const": 1
+    },
+    "createdBy": {
+      "type": "object",
+      "properties": { "app": { "type": "string" }, "version": { "type": "string" } },
+      "additionalProperties": false
+    },
+    "request": {
+      "description": "依頼。name-studio の依頼の日時（依頼/<id>/）と、今回の注文。",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "createdAt": { "type": "string" },
+        "note": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "work": {
+      "description": "作品（ネーム）全体のこと。",
+      "type": "object",
+      "properties": {
+        "title": { "type": "string" },
+        "paperMm": { "$ref": "#/$defs/size" },
+        "binding": { "enum": ["right", "left", "scroll"] },
+        "worldBrief": { "description": "世界の設定（場所・建物・物）。", "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "folders": {
+      "description": "作業フォルダー（背景のフォルダー。案/ と依頼/ がある）と素材のフォルダー（素材.json がある）。相対ならこのファイルのあるフォルダーから。",
+      "type": "object",
+      "properties": {
+        "background": { "type": "string" },
+        "assets": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "shots": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/shot" }
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "point": {
+      "type": "array",
+      "items": { "type": "number" },
+      "minItems": 2,
+      "maxItems": 2
+    },
+    "size": {
+      "type": "array",
+      "items": { "type": "number", "exclusiveMinimum": 0 },
+      "minItems": 2,
+      "maxItems": 2
+    },
+    "vec3": {
+      "type": "array",
+      "items": { "type": "number" },
+      "minItems": 3,
+      "maxItems": 3
+    },
+    "box": {
+      "description": "[x0, y0, x1, y1]",
+      "type": "array",
+      "items": { "type": "number" },
+      "minItems": 4,
+      "maxItems": 4
+    },
+    "line": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/point" },
+      "minItems": 2,
+      "maxItems": 2
+    },
+    "polygon": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/point" },
+      "minItems": 3
+    },
+    "axis": {
+      "description": "場所の座標の向き（+X・-X・+Y・-Y）。",
+      "enum": ["+X", "-X", "+Y", "-Y"]
+    },
+    "assumption": {
+      "description": "決まっていなかったので仮に置いた値。誰が・なぜを残して見えるようにする。",
+      "type": "object",
+      "required": ["path", "value"],
+      "properties": {
+        "path": { "description": "置いた項目（例 camera.heightM）。", "type": "string" },
+        "value": {},
+        "by": { "enum": ["tool", "ai", "author"] },
+        "note": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "shot": {
+      "description": "1 コマぶんの指示。",
+      "type": "object",
+      "required": ["id", "frame"],
+      "properties": {
+        "id": { "description": "コマの id（name-studio の panel.id）。名前が変わっても変わらない。", "type": "string", "minLength": 1 },
+        "label": { "description": "人が読む名前（p6 コマ1）。", "type": "string" },
+        "page": { "description": "ページの番号（1 から）。", "type": "integer", "minimum": 1 },
+        "order": { "description": "そのページの中の読む順（1 から）。前後のコマの点検に使う。", "type": "integer", "minimum": 1 },
+        "stage": {
+          "description": "どこまで作るか。blockout＝設計（あたり）だけ、develop＝開発（本番の作画）まで。",
+          "enum": ["blockout", "develop"],
+          "default": "blockout"
+        },
+        "requirement": {
+          "description": "要求の版。確定（confirmed）した版に対して設計と開発の照合をする。",
+          "type": "object",
+          "properties": {
+            "version": { "type": "integer", "minimum": 1 },
+            "state": { "enum": ["draft", "confirmed"] },
+            "assumptions": { "type": "array", "items": { "$ref": "#/$defs/assumption" } }
+          },
+          "additionalProperties": false
+        },
+        "frame": {
+          "description": "描く範囲（コマの外接矩形＋塗り足し）と、その絵の大きさ。",
+          "type": "object",
+          "required": ["boxMm", "dpi"],
+          "properties": {
+            "boxMm": { "$ref": "#/$defs/box" },
+            "dpi": { "type": "number", "exclusiveMinimum": 0 },
+            "sizePx": {
+              "description": "boxMm を dpi で描いた大きさ（四捨五入）。書いてあれば読む側が計算と合うか確かめる。",
+              "type": "array",
+              "items": { "type": "integer", "minimum": 1 },
+              "minItems": 2,
+              "maxItems": 2
+            },
+            "shapeMm": { "description": "コマの形（紙面の mm）。", "$ref": "#/$defs/polygon" },
+            "openEdges": { "description": "裁ち切りの辺（shapeMm の i 番目の点から次の点まで）。", "type": "array", "items": { "type": "integer", "minimum": 0 } }
+          },
+          "additionalProperties": false
+        },
+        "intent": {
+          "description": "言葉の指示。AI が読む。",
+          "type": "object",
+          "properties": {
+            "none": { "description": "背景なし（描かない）。", "type": "boolean" },
+            "brief": { "description": "背景の指示（場所・何が見えるか）。", "type": "string" },
+            "camera": { "description": "カメラの言葉（定規がないとき）。eye＝目の高さ、low＝あおり、high＝俯瞰。", "enum": ["eye", "low", "high"] },
+            "memo": { "description": "演出メモ。", "type": "string" },
+            "dialogue": { "type": "array", "items": { "type": "string" } },
+            "pageMemo": { "type": "string" }
+          },
+          "additionalProperties": false
+        },
+        "ruler": {
+          "description": "透視の定規（作者がコマに描いたもの）。消失点 1・2 はアイレベルの上、3 は縦の線が集まる点。カメラはこれから決まる。",
+          "type": "object",
+          "required": ["points", "horizonMm"],
+          "properties": {
+            "points": { "enum": [0, 1, 2, 3] },
+            "horizonMm": { "description": "アイレベルの 2 点（コマの左右の辺の上）。", "$ref": "#/$defs/line" },
+            "vanishingMm": { "type": "array", "items": { "$ref": "#/$defs/point" }, "maxItems": 3 },
+            "guidesMm": { "description": "XYZ の線（X・Y 各 1 本、Z 2 本）。", "type": "array", "items": { "$ref": "#/$defs/line" }, "maxItems": 4 }
+          },
+          "additionalProperties": false
+        },
+        "camera": {
+          "description": "カメラについて決まっていること。定規から決まらない値（高さ・場所の中の位置・レンズ）と、指示を書いた道具が計算した値（hint、照合用）。",
+          "type": "object",
+          "properties": {
+            "heightM": { "description": "カメラ（目）の高さ。地面＝0。", "type": "number" },
+            "positionM": { "description": "場所の座標でのカメラの位置。", "$ref": "#/$defs/vec3" },
+            "spot": { "description": "場所の中の立ち位置の名前（素材の note にあるもの）。", "type": "string" },
+            "lensMm": { "description": "レンズ（36mm センサーを長い辺に）。消失点 2 つ以上なら定規から決まるので書かない。", "type": "number", "exclusiveMinimum": 0 },
+            "hint": {
+              "description": "指示を書いた道具（name-studio の bgcamera.ts）が計算したカメラ。name-blockout は自分でも計算し、合うか確かめる。",
+              "type": "object",
+              "properties": {
+                "mode": { "enum": ["level", "tilt"] },
+                "points": { "type": "integer" },
+                "lensMm": { "type": "number" },
+                "focalPx": { "type": "number" },
+                "lensFromPoints": { "type": "boolean" },
+                "shiftX": { "type": "number" },
+                "shiftY": { "type": "number" },
+                "tiltDeg": { "type": "number" },
+                "rollDeg": { "type": "number" },
+                "turnsDeg": { "type": "array", "items": { "type": ["number", "null"] } }
+              },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
+        },
+        "place": {
+          "description": "場所。素材（素材.json の名前）か、なければ言葉だけ。",
+          "type": "object",
+          "properties": {
+            "asset": { "type": "string" },
+            "axes": {
+              "description": "消失点 1・2 へ向かう線が、場所の座標のどの向きか（例 [\"+X\", \"+Y\"]）。なければ道具が仮に決める。",
+              "type": "array",
+              "items": { "$ref": "#/$defs/axis" },
+              "maxItems": 2
+            },
+            "note": { "type": "string" }
+          },
+          "additionalProperties": false
+        },
+        "objects": {
+          "description": "物の指示。画面の中の範囲と名前。",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["id", "label", "shapeMm"],
+            "properties": {
+              "id": { "type": "string" },
+              "label": { "type": "string" },
+              "asset": { "description": "素材の名前（なければ名前の頭が素材の名前と同じもの）。", "type": "string" },
+              "shapeMm": { "$ref": "#/$defs/polygon" },
+              "sizeM": { "description": "大きさ [幅 X, 奥行 Y, 高さ Z]。素材がなければ箱の大きさに使う。", "$ref": "#/$defs/vec3" },
+              "axis": { "description": "物の辺が向かう消失点（1 か 2）。なければ場の線と同じ（1）。", "enum": [1, 2] },
+              "facing": { "description": "向きの言葉（横向き・正面・斜め・ドアをこちら に など）。", "type": "string" },
+              "show": { "description": "見せたい面（開いたドア・正面の看板 など）。", "type": "string" },
+              "onGround": { "description": "地面に置く（既定）。false なら宙（看板・照明）。", "type": "boolean" }
+            },
+            "additionalProperties": false
+          }
+        },
+        "figures": {
+          "description": "人物（あたりの人形）。頭から足までの範囲で、カメラの高さの点検にも使う。",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["id", "shapeMm"],
+            "properties": {
+              "id": { "type": "string" },
+              "name": { "type": "string" },
+              "heightM": { "type": "number", "exclusiveMinimum": 0 },
+              "shapeMm": { "description": "頭のてっぺんから足までの範囲。", "$ref": "#/$defs/polygon" },
+              "pose": { "enum": ["stand", "sit", "crouch", "lie"] },
+              "facing": { "type": "string" },
+              "cut": { "description": "コマで切れていて足が見えない（足の位置からは測れない）。", "type": "boolean" }
+            },
+            "additionalProperties": false
+          }
+        },
+        "look": {
+          "description": "開発フェイズの見た目（場所・時間帯・光・質感）。設計（Blockout）では使わない。言葉で選び、数値には道具が直す。",
+          "type": "object",
+          "properties": {
+            "timeOfDay": { "enum": ["dawn", "morning", "noon", "afternoon", "evening", "dusk", "night"] },
+            "date": { "description": "日付（YYYY-MM-DD）。季節の太陽の高さに使う。", "type": "string" },
+            "location": {
+              "type": "object",
+              "properties": {
+                "latDeg": { "type": "number", "minimum": -90, "maximum": 90 },
+                "lonDeg": { "type": "number", "minimum": -180, "maximum": 180 }
+              },
+              "required": ["latDeg", "lonDeg"],
+              "additionalProperties": false
+            },
+            "north": { "description": "場所の座標で北の向き（既定 +Y）。", "$ref": "#/$defs/axis" },
+            "weather": { "enum": ["clear", "cloudy", "overcast", "rain", "snow", "fog", "haze"] },
+            "light": {
+              "type": "object",
+              "properties": {
+                "key": { "enum": ["front", "back", "side-left", "side-right", "top", "window", "street", "interior"] },
+                "note": { "type": "string" }
+              },
+              "additionalProperties": false
+            },
+            "materials": {
+              "description": "材質の割り当て（材質のライブラリの名前）。3D の材質と漫画での描き方（線の描き込み・トーン・ベタ）を組で持つ。",
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": ["target", "material"],
+                "properties": {
+                  "target": { "description": "物の id か、素材の中の部分の名前。", "type": "string" },
+                  "material": { "type": "string" }
+                },
+                "additionalProperties": false
+              }
+            },
+            "note": { "type": "string" }
+          },
+          "additionalProperties": false
+        },
+        "render": {
+          "description": "描き出し方。",
+          "type": "object",
+          "properties": {
+            "passes": { "type": "array", "items": { "enum": ["完成", "線画", "トーン", "影"] }, "uniqueItems": true },
+            "previewDpi": { "description": "下見の解像度（設計の案はこれで描く）。", "type": "number", "exclusiveMinimum": 0 }
+          },
+          "additionalProperties": false
+        },
+        "output": {
+          "description": "描いたものの置き場所（作業フォルダーからの相対、/ 区切り）。",
+          "type": "object",
+          "properties": {
+            "take": { "type": "string" },
+            "dir": { "type": "string" }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}
