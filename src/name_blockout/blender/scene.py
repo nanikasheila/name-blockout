@@ -126,8 +126,11 @@ def _mesh_object(name: str, bm: bmesh.types.BMesh, coll, material, mark_all: boo
 
 
 def add_ground(ground: dict):
-    """Level grids in rings (the plan's), each cell's edges marked so they are drawn: they run to the vanishing points."""
+    """Level grids in rings (the plan's), each cell's edges marked so they are drawn: they run to the vanishing points.
+    A room's floor is one grid inside its walls (rectM)."""
     z = ground.get("z", 0.0)
+    if ground.get("rectM"):
+        return _floor_grid(ground["rectM"], ground["spacingM"], z)
     cx, cy = ground.get("centreM", (0.0, 0.0))
     rings = ground.get("rings") or [{"spacingM": ground["spacingM"], "extentM": ground["extentM"]}]
     bm = bmesh.new()
@@ -152,6 +155,131 @@ def add_ground(ground: dict):
         inner = n * s
     material = tone_material("ground", flat=0.95)
     return _mesh_object(PREFIX + "ground", bm, collection("ground"), material, mark_all=True)
+
+
+def _breaks(start: float, end: float, step: float) -> list[float]:
+    """start, end and the multiples of step between (a grid that lines up with the world's, cut at the walls)."""
+    out = [start]
+    k = math.floor(start / step) + 1
+    while k * step < end - 1e-6:
+        if k * step > start + 1e-6:
+            out.append(k * step)
+        k += 1
+    return out + [end]
+
+
+def _floor_grid(rect, spacing: float, z: float):
+    x0, y0, x1, y1 = rect
+    xs, ys = _breaks(x0, x1, spacing), _breaks(y0, y1, spacing)
+    bm = bmesh.new()
+    verts = [[bm.verts.new((x, y, z)) for y in ys] for x in xs]
+    for i in range(len(xs) - 1):
+        for j in range(len(ys) - 1):
+            bm.faces.new((verts[i][j], verts[i + 1][j], verts[i + 1][j + 1], verts[i][j + 1]))
+    material = tone_material("ground", flat=0.95)
+    return _mesh_object(PREFIX + "ground", bm, collection("ground"), material, mark_all=True)
+
+
+def _in_hole(holes, u: float, v: float) -> bool:
+    return any(h[0] - 1e-6 <= u <= h[1] + 1e-6 and h[2] - 1e-6 <= v <= h[3] + 1e-6 for h in holes)
+
+
+def _drawn(holes, length: float, height: float, p, q) -> bool:
+    """A wall's edge from p to q (along the wall, up it) is drawn: on the wall's outline, or on a window's."""
+    (u_a, v_a), (u_b, v_b) = p, q
+    if u_a == u_b and u_a in (0.0, length) or v_a == v_b and v_a in (0.0, height):
+        return True
+    for h in holes:
+        if u_a == u_b and u_a in (h[0], h[1]) and h[2] - 1e-6 <= min(v_a, v_b) and max(v_a, v_b) <= h[3] + 1e-6:
+            return True
+        if v_a == v_b and v_a in (h[2], h[3]) and h[0] - 1e-6 <= min(u_a, u_b) and max(u_a, u_b) <= h[1] + 1e-6:
+            return True
+    return False
+
+
+def add_room(room: dict):
+    """The room's walls and ceiling as one mesh facing in, windows cut through (with a reveal as deep as the wall), its
+    corners and the windows' edges marked to be drawn. They take light and cast no shadow (the room's light is the
+    key's, as the plan sets it); the shadow check looks through them the same way (nb_noshadow)."""
+    x0, y0, x1, y1 = room["rectM"]
+    height = room["heightM"]
+    depth = room.get("revealM", 0.12)
+    centre = Vector(((x0 + x1) / 2, (y0 + y1) / 2, height / 2))
+    bm = bmesh.new()
+    marked: set = set()
+
+    def mark(p, q):
+        marked.add(frozenset((tuple(round(c, 4) for c in p.co), tuple(round(c, 4) for c in q.co))))
+
+    ends = {
+        "+X": ((x1, y1), (x1, y0)),
+        "-X": ((x0, y0), (x0, y1)),
+        "+Y": ((x0, y1), (x1, y1)),
+        "-Y": ((x1, y0), (x0, y0)),
+    }
+    outward = {"+X": Vector((1, 0, 0)), "-X": Vector((-1, 0, 0)), "+Y": Vector((0, 1, 0)), "-Y": Vector((0, -1, 0))}
+    faces = []
+    for side, ((ax, ay), (bx, by)) in ends.items():
+        a, b = Vector((ax, ay, 0.0)), Vector((bx, by, 0.0))
+        length = (b - a).length
+        along = (b - a) / length
+        holes = []
+        for w in room.get("windows", []):
+            if w["side"] != side:
+                continue
+            u0 = (Vector((*w["fromM"], 0.0)) - a).dot(along)
+            u1 = (Vector((*w["toM"], 0.0)) - a).dot(along)
+            holes.append((min(u0, u1), max(u0, u1), w["sillM"], w["headM"]))
+        us = sorted({0.0, length, *[h[0] for h in holes], *[h[1] for h in holes]})
+        vs = sorted({0.0, height, *[h[2] for h in holes], *[h[3] for h in holes]})
+        grid = {(i, j): bm.verts.new(a + along * u + Vector((0, 0, v))) for i, u in enumerate(us) for j, v in enumerate(vs)}
+
+        for i in range(len(us) - 1):
+            for j in range(len(vs) - 1):
+                if _in_hole(holes, (us[i] + us[i + 1]) / 2, (vs[j] + vs[j + 1]) / 2):
+                    continue
+                corners = [(i, j), (i + 1, j), (i + 1, j + 1), (i, j + 1)]
+                faces.append(bm.faces.new([grid[c] for c in corners]))
+                for k in range(4):
+                    p, q = corners[k], corners[(k + 1) % 4]
+                    if _drawn(holes, length, height, (us[p[0]], vs[p[1]]), (us[q[0]], vs[q[1]])):
+                        mark(grid[p], grid[q])
+        # Each window's reveal: the wall's thickness round the hole, its outer edge drawn too.
+        out = outward[side] * depth
+        for u0, u1, v0, v1 in holes:
+            inner = [a + along * u0 + Vector((0, 0, v0)), a + along * u1 + Vector((0, 0, v0))]
+            inner += [a + along * u1 + Vector((0, 0, v1)), a + along * u0 + Vector((0, 0, v1))]
+            iv = [bm.verts.new(p) for p in inner]
+            ov = [bm.verts.new(p + out) for p in inner]
+            for k in range(4):
+                n = (k + 1) % 4
+                faces.append(bm.faces.new((iv[k], iv[n], ov[n], ov[k])))
+                mark(ov[k], ov[n])
+                mark(iv[k], ov[k])
+    top = [bm.verts.new((x, y, height)) for x, y in ((x0, y0), (x1, y0), (x1, y1), (x0, y1))]
+    faces.append(bm.faces.new(top))
+    for k in range(4):
+        mark(top[k], top[(k + 1) % 4])
+    bmesh.ops.remove_doubles(bm, verts=bm.verts, dist=1e-5)
+    for f in bm.faces:
+        f.normal_update()
+        if f.normal.dot(centre - f.calc_center_median()) < 0:
+            f.normal_flip()
+    mesh = bpy.data.meshes.new(PREFIX + "room")
+    bm.to_mesh(mesh)
+    bm.free()
+    attr = mesh.attributes.get("freestyle_edge") or mesh.attributes.new("freestyle_edge", "BOOLEAN", "EDGE")
+    values = []
+    for e in mesh.edges:
+        key = frozenset(tuple(round(c, 4) for c in mesh.vertices[i].co) for i in e.vertices)
+        values.append(key in marked)
+    attr.data.foreach_set("value", values)
+    mesh.materials.append(tone_material("room", lift=0.08))
+    obj = bpy.data.objects.new(PREFIX + "room", mesh)
+    band_collection("near").objects.link(obj)
+    obj.visible_shadow = False
+    obj["nb_noshadow"] = True
+    return obj
 
 
 def add_box(name: str, centre, size, along: str, coll, material):
@@ -290,7 +418,7 @@ def build(plan: dict) -> dict:
     bg = world.node_tree.nodes.get("Background")
     bg.inputs["Color"].default_value = (1, 1, 1, 1)
     scene.world = world
-    measured = {"objects": {}, "figures": {}, "edges": [], "world": world, "panorama": None}
+    measured = {"objects": {}, "figures": {}, "edges": [], "room": [], "world": world, "panorama": None}
     for band in BANDS:
         band_collection(band)
     if plan.get("ground"):
@@ -298,6 +426,10 @@ def build(plan: dict) -> dict:
     if plan.get("place"):
         coll = add_place(plan["place"])
         measured["edges"] += [o for o in coll.all_objects if o.type == "MESH"]
+    if plan.get("room"):
+        room = add_room(plan["room"])
+        measured["room"] = [room]
+        measured["edges"].append(room)
     for ref in plan.get("references", []):
         posts = band_collection("near")
         measured["edges"].append(add_box(PREFIX + ref["id"], ref["centreM"], ref["sizeM"], "X", posts, tone_material("proxy")))

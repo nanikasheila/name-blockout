@@ -17,6 +17,7 @@ from .imagesize import image_size
 from .instruction import Frame, frame_of
 from .look import lighting, setting_of
 from .materials import assign
+from .room import WALL_LABELS, build_room, room_of, room_words
 from .scope import hashes, object_hashes
 from .sizes import usual_size
 from .solve import DEFAULT_FIGURE_M, fit_box, fit_figure
@@ -168,6 +169,22 @@ def build_plan(data: dict, shot: dict, instruction_path: str | Path | None = Non
                         f"全天球の画像「{layer['name']}」は幅 {size[0]}px: {dpi_name}（{dpi_value:g}dpi）には {need}px 要るので粗く見えます"
                     )
                     break
+    room = None
+    spec = None if use_place else room_of(shot)
+    if spec is not None:
+        room, room_notes = build_room(spec, camera, objects + figures)
+        notes += [room_words(room), *room_notes]
+        if spec["autoWindows"] and room["windows"]:
+            walls = [w["wall"] for w in room["windows"]]
+            label = "・".join(WALL_LABELS[w] for w in walls)
+            assumptions.append(
+                {
+                    "path": "room.windows",
+                    "value": [{"wall": w} for w in walls],
+                    "by": "tool",
+                    "note": f"光は窓からなので、画面の左に見える壁（{label}）に窓",
+                }
+            )
     passes = ["完成", "線画", "トーン"] + (["遠景"] if far or any(o["band"] == "far" for o in objects) else [])
     passes = list((shot.get("render") or {}).get("passes") or passes)
 
@@ -188,9 +205,10 @@ def build_plan(data: dict, shot: dict, instruction_path: str | Path | None = Non
             "matrixWorld": camera.blender_matrix(),
             "vanishingAxes": vp_axes,
         },
-        "ground": None if use_place else _ground(camera, render_frame.dpi / frame.dpi, objects + figures),
+        "ground": None if use_place else (_floor(room) if room else _ground(camera, render_frame.dpi / frame.dpi, objects + figures)),
         "place": _asset_entry(place_asset, assets_dir) if use_place else None,
-        "references": _references(camera) if (camera.points >= 3 and not objects and not use_place) else [],
+        "room": room,
+        "references": _references(camera) if (camera.points >= 3 and not objects and not use_place and not room) else [],
         "objects": objects,
         "figures": figures,
         "far": far,
@@ -299,6 +317,15 @@ def _ground(camera: Camera, render_scale: float, placed: list[dict]) -> dict:
     return {"z": 0.0, "centreM": [cx, cy], "rings": rings}
 
 
+#: A floor's grid indoors: half a ken (a tatami's width), so its lines run to the vanishing points as boards would.
+FLOOR_SPACING_M = 0.91
+
+
+def _floor(room: dict) -> dict:
+    """The room's floor as the ground: a grid inside its walls."""
+    return {"z": 0.0, "rectM": list(room["rectM"]), "spacingM": FLOOR_SPACING_M}
+
+
 def _references(camera: Camera) -> list[dict]:
     """For 3点 with nothing else in the picture: posts standing ahead, so the uprights' vanishing shows."""
     _, _, forward = camera.camera_axes_world()
@@ -327,7 +354,7 @@ def build_develop_plan(data: dict, shot: dict, instruction_path: str | Path | No
     camera = plan["camera"]
     setting, setting_assumed = setting_of(shot)
     light, light_assumed = lighting(shot.get("look"), camera["headingDeg"], setting)
-    materials, material_assumed = assign(shot, setting)
+    materials, material_assumed = assign(shot, setting, room=bool(plan.get("room")))
     plan["develop"] = {"lighting": light, "materials": materials}
     plan["assumptions"] += ([setting_assumed] if setting_assumed else []) + light_assumed + material_assumed
     passes = ["完成", "線画", "トーン", "影"] + (["遠景"] if "遠景" in plan["render"]["passes"] else [])

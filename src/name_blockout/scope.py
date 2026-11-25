@@ -19,7 +19,9 @@ from __future__ import annotations
 import hashlib
 import json
 
-DESIGN_FIELDS = ("frame", "ruler", "camera", "place", "objects", "figures", "far")
+from .room import room_of
+
+DESIGN_FIELDS = ("frame", "ruler", "camera", "place", "objects", "figures", "far", "room")
 DESIGN_INTENT = ("none", "brief", "camera")
 DEVELOP_FIELDS = ("look", "render", "stage")
 
@@ -40,6 +42,9 @@ def design_part(shot: dict) -> dict:
         part["camera"] = camera
     else:
         part.pop("camera", None)
+    room = room_of(shot)  # the room stands in the picture: indoors or not, and its windows, are design
+    if room is not None:
+        part["room"] = room
     intent = {key: (shot.get("intent") or {}).get(key) for key in DESIGN_INTENT if (shot.get("intent") or {}).get(key) is not None}
     if intent:
         part["intent"] = intent

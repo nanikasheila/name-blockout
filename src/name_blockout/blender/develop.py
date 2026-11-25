@@ -98,6 +98,9 @@ def add_light_ground(plan: dict):
     rings = ground.get("rings") or []
     extent = min(400.0, rings[-1]["extentM"]) if rings else 200.0
     cx, cy = ground.get("centreM") or plan["camera"].get("positionM", [0, 0])[:2]
+    if ground.get("rectM"):  # a room's floor: as far as its walls (a little beyond, under them)
+        x0, y0, x1, y1 = ground["rectM"]
+        cx, cy, extent = (x0 + x1) / 2, (y0 + y1) / 2, max(x1 - x0, y1 - y0) / 2 + 0.5
     mesh = bpy.data.meshes.new(PREFIX + "light_ground")
     mesh.from_pydata(
         [
@@ -177,6 +180,12 @@ def _set_materials(built: dict, plan: dict, which: str, ground) -> None:
             continue
         mat = _emission(f"dev_{ident.replace(':', '_')}_{which}", grey(m))
         for obj in objs:
+            obj.data.materials.clear()
+            obj.data.materials.append(mat)
+    walls = materials.get("walls")
+    if walls:
+        mat = _emission(f"dev_walls_{which}", grey(walls))
+        for obj in built.get("room", []):
             obj.data.materials.clear()
             obj.data.materials.append(mat)
     g = materials.get("ground")
@@ -279,6 +288,18 @@ def _load(path: Path) -> np.ndarray:
     return pixels.reshape(h, w, 4)[::-1]
 
 
+def _blocked(scene, depsgraph, start: Vector, ray: Vector) -> bool:
+    """Whether something between `start` and the light (along `ray`) casts a shadow there; a room's walls do not."""
+    for _ in range(8):
+        hit, location, _, _, obj, _ = scene.ray_cast(depsgraph, start, ray, distance=1e5)
+        if not hit:
+            return False
+        if not obj.get("nb_noshadow"):
+            return True
+        start = location + ray * 1e-3
+    return True
+
+
 def _skipped(why: str) -> dict:
     return {"name": "影の向き", "pass": True, "skipped": True, "tested": 0, "note": f"照合せず（{why}）"}
 
@@ -350,7 +371,7 @@ def shadow_check(plan: dict, built: dict, shadow: np.ndarray, lit: np.ndarray, s
                 if not hit or hit_obj.name not in grounds or (location - point).length > 0.05 * direction.length + 0.05:
                     continue
                 start = location + Vector((0, 0, 1e-3 + 1e-4 * direction.length))
-                hidden = [scene.ray_cast(depsgraph, start, ray, distance=1e5)[0] for ray in rays]
+                hidden = [_blocked(scene, depsgraph, start, ray) for ray in rays]
                 if (kind == "shadow" and not all(hidden)) or (kind == "sunny" and any(hidden)):
                     continue  # in a soft shadow's half-light, or lit or shaded by something else
                 x, y = int(v.x * (w - 1)), int((1 - v.y) * (h - 1))
@@ -378,7 +399,7 @@ def shadow_check(plan: dict, built: dict, shadow: np.ndarray, lit: np.ndarray, s
                 continue
             facing = normal.dot(toward)
             start = location + normal * (1e-3 + 1e-4 * (location - origin).length)
-            hidden = [scene.ray_cast(depsgraph, start, ray, distance=1e5)[0] for ray in rays]
+            hidden = [_blocked(scene, depsgraph, start, ray) for ray in rays]
             if facing < FACE_AWAY or all(hidden):
                 kind = "shadow"
             elif facing > FACE_LIT and not any(hidden):
