@@ -182,6 +182,29 @@ def _window(rect, height: float, side: str, w: dict, notes: list[str]) -> dict |
     }
 
 
+def window_heading(room: dict, placed: list[dict]) -> tuple[float, str] | None:
+    """Where the light through the room's first window comes from: the heading (degrees from +X, counter-clockwise)
+    from the middle of the things in the room (the room's middle when none) toward the window's middle, and the
+    window's wall. None when the room has no window."""
+    if not room or not room.get("windows"):
+        return None
+    win = room["windows"][0]
+    x0, y0, x1, y1 = room["rectM"]
+    inside = [
+        item["placed"]["centreM"]
+        for item in placed
+        if item.get("placed") and x0 <= item["placed"]["centreM"][0] <= x1 and y0 <= item["placed"]["centreM"][1] <= y1
+    ]
+    if inside:
+        cx, cy = sum(c[0] for c in inside) / len(inside), sum(c[1] for c in inside) / len(inside)
+    else:
+        cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
+    wx, wy = (win["fromM"][0] + win["toM"][0]) / 2, (win["fromM"][1] + win["toM"][1]) / 2
+    if math.hypot(wx - cx, wy - cy) < 1e-6:
+        return None
+    return math.degrees(math.atan2(wy - cy, wx - cx)), win["wall"]
+
+
 def room_words(room: dict) -> str:
     """The room in a few words, for the plan's notes: 部屋 3.6×4.2m・天井 2.4m・窓 左."""
     x0, y0, x1, y1 = room["rectM"]

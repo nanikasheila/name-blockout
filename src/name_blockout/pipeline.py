@@ -51,6 +51,8 @@ def last_built(folder: Path, shot_id: str, mode: str = "blockout") -> dict | Non
 
 TIME_WORDS = {"dawn": "明け方", "morning": "朝", "noon": "昼", "afternoon": "午後", "evening": "夕方", "dusk": "日暮れ", "night": "夜"}
 WEATHER_WORDS = {"clear": "晴れ", "cloudy": "くもり", "overcast": "どんより", "rain": "雨", "snow": "雪", "fog": "霧", "haze": "かすみ"}
+#: The plan notes the take's one-line note carries: the room, the window the light comes from, the 素材 swapped in.
+TAKE_NOTES = ("部屋 ", "窓の光は", "素材に差し替え")
 
 
 def light_words(light: dict) -> str:
@@ -158,7 +160,12 @@ def run_blockout(
             if develop
             else "Blockout（箱のあたり、name-blockout）"
         )
-        note = f"{head}。{summary_words(result)}" + (f"。仮: {assumed}" if assumed else "")
+        note = f"{head}。{summary_words(result)}"
+        # What the picture is built in and from: the room, the light's window, the 素材 the things were swapped for.
+        told = [n for n in plan["notes"] if n.startswith(TAKE_NOTES)]
+        if told:
+            note += "。" + "。".join(told)
+        note += f"。仮: {assumed}" if assumed else ""
         credits = [c["credit"] for c in plan.get("credits", []) if c.get("needsCredit")]
         if credits:
             note += "。クレジット: " + " / ".join(credits)
