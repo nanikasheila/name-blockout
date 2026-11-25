@@ -85,9 +85,12 @@ def cmd_validate(a) -> int:
 
 
 def cmd_check(a) -> int:
+    from .pipeline import background_folder
+    from .requirement import answered
+
     data = read_instruction(a.instruction)
     findings = check_instruction(data, a.instruction)
-    questions = pick_questions(findings, a.questions)
+    questions = pick_questions(findings, a.questions, answered(data, background_folder(data, Path(a.instruction).resolve())))
     if a.json:
         _print({"findings": findings, "questions": questions}, True)
     else:

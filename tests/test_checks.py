@@ -180,3 +180,27 @@ def test_develop_indoors_from_the_words():
     shot["look"]["setting"] = "outdoor"
     found = {f["code"] for f in check_instruction(data)}
     assert "look.setting" not in found and "look.indoor-key" not in found and "look.north" in found
+
+
+def test_answered_questions_are_not_asked_again(tmp_path):
+    """An app that asked the author lists what was answered (requirement.answered); check asks the next one."""
+    import subprocess
+    import sys
+
+    data = example()
+    shot = data["shots"][0]
+    del shot["camera"]
+    first = pick_questions(check_instruction(data), 1)
+    assert first
+    shot["requirement"] = {"answered": [first[0]["path"]]}
+    path = tmp_path / "指示.json"
+    path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    out = subprocess.run(
+        [sys.executable, "-m", "name_blockout", "check", str(path), "--json", "--questions", "5"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        env={**__import__("os").environ, "PYTHONPATH": str(Path(__file__).resolve().parents[1] / "src")},
+    )
+    asked = {q["path"] for q in json.loads(out.stdout)["questions"]}
+    assert first[0]["path"] not in asked

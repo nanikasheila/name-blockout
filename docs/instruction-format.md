@@ -30,7 +30,7 @@ name-studio などのネームの道具と name-blockout の間の約束です�
 | `id` | コマの id（name-studio の panel.id。名前が変わっても変わらない） | — |
 | `label`・`page`・`order` | 人が読む名前（p6 コマ1）・ページ・読む順。前後のコマの点検に使う | — |
 | `stage` | `blockout`（設計だけ）か `develop`（本番まで） | 開発 |
-| `requirement` | 要求の版・確定かどうか・仮に置いた値（name-blockout の `要求/` と同じ形） | — |
+| `requirement` | 要求の版・確定かどうか・仮に置いた値（name-blockout の `要求/` と同じ形）。`answered` は、書いたアプリで作者が答えた（おまかせにした）問いの path の一覧で、`check` はそれをもう聞かない（値を決めた問いは、その値を項目に書く） | — |
 | `frame` | 描く範囲 `boxMm`（コマの外接矩形＋塗り足し 3mm、紙面の中）・`dpi`・`sizePx`（四捨五入、書いてあれば照合）・コマの形 `shapeMm`・裁ち切り `openEdges` | 設計 |
 | `intent` | 背景なし `none`・背景の指示 `brief`・カメラの言葉 `camera`（eye/low/high、定規がないとき）・演出メモ・セリフ・ページのメモ | 設計（`none`・`brief`・`camera`）、ほかは人が読むだけ |
 | `ruler` | 透視の定規: `points`（0〜3）・アイレベル `horizonMm`（コマの左右の辺の上の 2 点）・消失点 `vanishingMm`（1・2 はアイレベルの上、3 は縦の線が集まる点）・XYZ の線 `guidesMm` | 設計 |

@@ -127,7 +127,12 @@
           "properties": {
             "version": { "type": "integer", "minimum": 1 },
             "state": { "enum": ["draft", "confirmed"] },
-            "assumptions": { "type": "array", "items": { "$ref": "#/$defs/assumption" } }
+            "assumptions": { "type": "array", "items": { "$ref": "#/$defs/assumption" } },
+            "answered": {
+              "description": "作者が答えた（おまかせにした）問いの path。点検はこれらをもう聞かない。値を決めた問いは、その値を指示書の項目に書く。",
+              "type": "array",
+              "items": { "type": "string" }
+            }
           },
           "additionalProperties": false
         },

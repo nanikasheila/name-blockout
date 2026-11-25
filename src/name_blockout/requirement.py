@@ -172,3 +172,17 @@ def confirm(folder: str | Path, shot: dict, assumptions: list | None = None) -> 
 
 def _now() -> str:
     return datetime.now(UTC).isoformat(timespec="seconds")
+
+
+def answered(data: dict, folder: str | Path | None = None) -> set[str]:
+    """The questions already answered, as "shot:path": those the instruction lists (requirement.answered: the author
+    answered them in the app that wrote it) and those answered in the work folder's current version of each shot."""
+    out = set()
+    for shot in data.get("shots") or []:
+        for path in (shot.get("requirement") or {}).get("answered") or []:
+            out.add(f"{shot['id']}:{path}")
+        if folder is not None:
+            version = current(read_requirement(folder, shot["id"]))
+            for path in (version or {}).get("answers") or {}:
+                out.add(f"{shot['id']}:{path}")
+    return out
