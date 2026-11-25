@@ -15,9 +15,9 @@ from .camera import AXES, DEFAULT_HEIGHT_M, Camera, CameraError, fit_camera
 from .far import BAND_LABELS, FAR_M, NEAR_M, band_of, far_layers, level_distance, panorama_width_needed, parallax_free_m
 from .imagesize import image_size
 from .instruction import Frame, frame_of
-from .look import lighting, setting_of
+from .look import DEFAULT_NORTH, aimed, lighting, setting_of
 from .materials import assign
-from .room import WALL_LABELS, build_room, room_of, room_words
+from .room import WALL_LABELS, build_room, room_of, room_words, window_heading
 from .scope import hashes, object_hashes
 from .sizes import usual_size
 from .solve import DEFAULT_FIGURE_M, fit_box, fit_figure
@@ -355,6 +355,11 @@ def build_develop_plan(data: dict, shot: dict, instruction_path: str | Path | No
     setting, setting_assumed = setting_of(shot)
     light, light_assumed = lighting(shot.get("look"), camera["headingDeg"], setting)
     materials, material_assumed = assign(shot, setting, room=bool(plan.get("room")))
+    # Light through a window comes from the window the room has (not only "from the left").
+    toward = window_heading(plan.get("room"), plan["objects"] + plan["figures"]) if light["key"] == "window" else None
+    if toward and light.get("sun"):
+        light["sun"] = aimed(light["sun"], toward[0], (shot.get("look") or {}).get("north") or DEFAULT_NORTH)
+        plan["notes"].append(f"窓の光は{WALL_LABELS[toward[1]]}の壁の窓から")
     plan["develop"] = {"lighting": light, "materials": materials}
     # The development draws each thing as its 素材 where it has one (the Blockout keeps the boxes).
     plan["detail"] = True

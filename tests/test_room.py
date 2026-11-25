@@ -77,3 +77,32 @@ def test_no_room_outdoors_and_a_ceiling_over_what_is_tall():
     shot["objects"][2]["sizeM"] = [0.9, 0.35, 2.8]  # a shelf taller than a 2.4 m ceiling
     plan = build_plan(data, shot, INDOOR)
     assert plan["room"]["heightM"] > 2.8 and any("天井を" in n for n in plan["notes"])
+
+
+def test_window_light_comes_from_the_window():
+    from name_blockout.plan import build_develop_plan
+
+    data, shot = example()
+    shot.setdefault("look", {})["light"] = {"key": "window"}
+    shot["look"]["timeOfDay"] = "noon"
+    plan = build_develop_plan(data, shot, INDOOR)
+    (window,) = plan["room"]["windows"]
+    sun = plan["develop"]["lighting"]["sun"]
+    # Toward the window's middle from the things in the room, at the window light's height.
+    xs = [o["placed"]["centreM"] for o in plan["objects"] + plan["figures"]]
+    cx, cy = sum(c[0] for c in xs) / len(xs), sum(c[1] for c in xs) / len(xs)
+    wx, wy = [(a + b) / 2 for a, b in zip(window["fromM"], window["toM"])]
+    d = sun["direction"]
+    n = (wx - cx, wy - cy)
+    length = (n[0] ** 2 + n[1] ** 2) ** 0.5
+    flat = (d[0] ** 2 + d[1] ** 2) ** 0.5
+    assert abs(d[0] / flat - n[0] / length) < 1e-3 and abs(d[1] / flat - n[1] / length) < 1e-3
+    assert sun["elevationDeg"] == 20.0 and d[2] > 0
+    assert any(n.startswith("窓の光は") for n in plan["notes"])
+
+
+def test_window_heading_without_windows():
+    from name_blockout.room import window_heading
+
+    assert window_heading(None, []) is None
+    assert window_heading({"rectM": [0, 0, 3, 3], "windows": []}, []) is None

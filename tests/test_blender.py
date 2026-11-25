@@ -196,6 +196,8 @@ def test_develop_a_room_with_a_window(tmp_path):
     assert r["pass"] and light["pass"], r["note"]
     assert light["faces"]["shadow"][1] >= 50 and light["faces"]["sunny"][1] >= 50, light
     assert "明かりは窓から" in r["note"] and "room.windows" in r["note"]
+    # The take's note says the room and where its light comes in, as the plan does.
+    assert "。部屋 " in r["note"] and "窓の光は" in r["note"], r["note"]
     image = bpy.data.images.load(str(tmp_path / "案" / "panel1" / "1" / "線画.png"))
     w, h = image.size
     lines = np.array(image.pixels[:], dtype=np.float32).reshape(h, w, 4)[::-1]
@@ -257,6 +259,7 @@ def test_develop_draws_a_thing_as_its_asset(tmp_path):
     assert r["pass"], r["note"]
     plan = json.loads((tmp_path / "blockout" / "panel1" / "2" / "plan.json").read_text(encoding="utf-8"))
     assert "素材に差し替え: 椅子（椅子）" in plan["notes"]
+    assert "素材に差し替え: 椅子（椅子）" in r["note"]
     bpy.ops.wm.open_mainfile(filepath=str(tmp_path / "blockout" / "panel1" / "2" / "scene.blend"))
     holder = bpy.data.objects["NB_thing_o2"]
     seat = next(o for o in holder.children if o.name.startswith("座面"))

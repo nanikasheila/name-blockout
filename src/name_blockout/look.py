@@ -216,6 +216,16 @@ def _keyed(key: str, camera_heading: float, north: str, strength: float, angle: 
     }
 
 
+def aimed(sun: dict, heading_deg: float, north: str = DEFAULT_NORTH) -> dict:
+    """The same light turned to come from `heading_deg` (degrees from +X, counter-clockwise), at its height."""
+    azimuth = heading_azimuth(heading_deg, north)
+    return {
+        **sun,
+        "azimuthDeg": round(azimuth, 3),
+        "direction": [round(v, 6) for v in world_direction(azimuth, sun["elevationDeg"], north)],
+    }
+
+
 def lighting(look: dict | None, camera_heading: float, setting: str = "outdoor") -> tuple[dict, list[dict]]:
     """The light of a shot in numbers, and the assumptions made for what the words leave open."""
     look = look or {}
