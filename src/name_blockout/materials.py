@@ -85,9 +85,18 @@ GUESSES = {
     "電柱": "コンクリート",
     "給水塔": "コンクリート",
     "屋根": "瓦",
+    "床": "木",
+    "テーブル": "木",
+    "本棚": "木",
+    "布団": "布",
+    "カーテン": "布",
+    "冷蔵庫": "金属",
+    "テレビ": "黒い塗装",
 }
 GROUND = "ground"
 DEFAULT_GROUND = "アスファルト"
+#: Indoors the ground is a floor.
+DEFAULT_FLOOR = "木"
 
 
 def guess(label: str) -> str | None:
@@ -95,18 +104,19 @@ def guess(label: str) -> str | None:
     return GUESSES[max(found, key=len)] if found else None
 
 
-def assign(shot: dict) -> tuple[dict[str, dict], list[dict]]:
-    """Each thing's material (by id; the ground as "ground"), and what was guessed (as assumptions)."""
+def assign(shot: dict, setting: str = "outdoor") -> tuple[dict[str, dict], list[dict]]:
+    """Each thing's material (by id; the ground as "ground", a floor indoors), and what was guessed (as assumptions)."""
     given = {m["target"]: m["material"] for m in ((shot.get("look") or {}).get("materials") or [])}
     out: dict[str, dict] = {}
     assumed: list[dict] = []
-    targets = [(o["id"], o.get("label", "")) for o in shot.get("objects") or []] + [(GROUND, "地面")]
+    indoor = setting == "indoor"
+    targets = [(o["id"], o.get("label", "")) for o in shot.get("objects") or []] + [(GROUND, "床" if indoor else "地面")]
     for ident, label in targets:
         name = given.get(ident)
         if name and name in LIBRARY:
             out[ident] = LIBRARY[name].as_dict()
             continue
-        guessed = DEFAULT_GROUND if ident == GROUND else (guess(label) or DEFAULT)
+        guessed = (DEFAULT_FLOOR if indoor else DEFAULT_GROUND) if ident == GROUND else (guess(label) or DEFAULT)
         out[ident] = LIBRARY[guessed].as_dict()
         why = f"材質「{name}」がライブラリにない" if name else "材質が決まっていない"
         assumed.append(

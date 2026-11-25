@@ -11,9 +11,19 @@ from the 3D side, the drawing from the manga side.
    影 = the shadow alone (a grey on transparent). 線画 as in the Blockout
    (thinner with distance). 完成 = トーン and 線画 on white.
 
-Then the check of the light: for each thing on the ground, a point of ground
-where its shadow must fall (away from the sun) and one where it must not
-(toward the sun), seen by the camera, are looked up in 光.
+ベタ: the lines over a solid black are drawn white (else they vanish in it).
+
+Then the check of the light, looked up in 光 against the geometry (Blender's
+ray casts, not the render):
+- for each thing on the ground, points of ground where its shadow must fall
+  (away from the sun) and where it must not (toward the sun);
+- a grid of points over the whole picture: the surface the camera sees there
+  must be in shadow when it is turned away from the light or something stands
+  between it and the light, and lit when it faces the light with nothing in
+  between (points near a shadow's edge, in a soft shadow's half-light or at a
+  grazing angle are left out).
+When no point could be tried the check says so (照合せず) instead of passing
+quietly.
 """
 
 from __future__ import annotations
@@ -36,6 +46,15 @@ FIGURE = {"tone": 0.0, "shadowTone": 0.25, "beta": False}
 NO_SUN_ALL_SHADOW = ("dawn", "dusk", "night")
 #: The sky's tone (density) when the sun is down.
 SKY_TONES = {"dawn": 0.2, "dusk": 0.35, "night": 0.8}
+#: Under this brightness (as shown) a tone counts as ベタ, and the lines over it are drawn white.
+BETA_SHOWN = 0.12
+#: The grid of the picture's check (across, down), and the shares it must agree in.
+GRID = (32, 20)
+GROUND_SHARE = 0.75
+FACE_SHARE = 0.85
+#: A face lit squarer than this to the light must be lit; one turned away past this must be in shadow.
+FACE_LIT = 0.3
+FACE_AWAY = -0.02
 
 
 def _emission(name: str, grey: float):
@@ -232,13 +251,21 @@ def develop_passes(plan: dict, built: dict, out_dir: Path, samples: int = 16) ->
     files["影"] = _save(out_dir / "影.png", shade)
     white = np.ones((h, w, 4), dtype=np.float32)
     lines = _load(files["線画"]) if "線画" in files else np.zeros((h, w, 4), dtype=np.float32)
-    files["完成"] = _save(out_dir / "完成.png", _over(lines, _over(tone, white)))
+    files["完成"] = _save(out_dir / "完成.png", _over(white_on_beta(lines, tone), _over(tone, white)))
     check = shadow_check(plan, built, shadow, lit, sun)
     for name in ("_lit.png", "_shadow.png"):
         (out_dir / name).unlink(missing_ok=True)
     if grid is not None:
         grid.hide_render = False
     return files, check
+
+
+def white_on_beta(lines: np.ndarray, tone: np.ndarray) -> np.ndarray:
+    """The lines with those over ベタ (a solid black) turned white, as a manga draws them."""
+    beta = (tone[..., 3] > 0.5) & (tone[..., :3].max(axis=-1) < BETA_SHOWN)
+    out = lines.copy()
+    out[beta, :3] = 1.0 - out[beta, :3]
+    return out
 
 
 def _load(path: Path) -> np.ndarray:
@@ -250,54 +277,127 @@ def _load(path: Path) -> np.ndarray:
     return pixels.reshape(h, w, 4)[::-1]
 
 
+def _skipped(why: str) -> dict:
+    return {"name": "影の向き", "pass": True, "skipped": True, "tested": 0, "note": f"照合せず（{why}）"}
+
+
+def _edge(mask: np.ndarray, x: int, y: int, r: int) -> bool:
+    """Whether a shadow's edge is within r pixels of (x, y)."""
+    h, w = mask.shape
+    patch = mask[max(0, y - r) : min(h, y + r + 1), max(0, x - r) : min(w, x + r + 1)]
+    return bool(patch.any()) and not bool(patch.all())
+
+
+def _around(toward: Vector, angle_deg: float) -> list[Vector]:
+    """The direction toward the light and four at the edges of its disc (a wide light casts soft shadows)."""
+    half = math.radians(max(angle_deg, 0.0)) / 2
+    if half < 1e-4:
+        return [toward]
+    side = toward.cross(Vector((0, 0, 1)))
+    if side.length < 1e-6:
+        side = Vector((1, 0, 0))
+    side.normalize()
+    up = side.cross(toward).normalized()
+    t = math.tan(half)
+    return [toward] + [(toward + d * t).normalized() for d in (side, -side, up, -up)]
+
+
 def shadow_check(plan: dict, built: dict, shadow: np.ndarray, lit: np.ndarray, sun) -> dict:
-    """Shadows fall away from the sun: per thing on the ground, a point of ground in its shadow and one on its sunny side."""
+    """Shadows fall where the geometry says: away from the light on the ground beside each thing, and over the
+    whole picture on the faces turned away from it or hidden from it."""
     if sun is None:
-        return {"name": "影の向き", "pass": True, "note": "太陽が出ていない（影の向きは照合しない）", "tested": 0}
+        return _skipped("日差しも明かりもない")
     from bpy_extras.object_utils import world_to_camera_view
 
     scene = bpy.context.scene
     cam = scene.camera
     h, w = shadow.shape
-    toward = Vector(plan["develop"]["lighting"]["sun"]["direction"])
-    level = Vector((toward.x, toward.y, 0.0))
-    if level.length < 1e-6:
-        return {"name": "影の向き", "pass": True, "note": "太陽が真上（影は足もと）", "tested": 0}
-    level.normalize()
-    elevation = math.asin(max(-1.0, min(1.0, toward.z)))
+    light = plan["develop"]["lighting"]["sun"]
+    toward = Vector(light["direction"]).normalized()
     depsgraph = bpy.context.evaluated_depsgraph_get()
     origin = cam.matrix_world.translation
     grounds = (PREFIX + "light_ground", PREFIX + "ground")
+    edge = max(2, round(min(w, h) / 200))
     results = {"shadow": [0, 0], "sunny": [0, 0]}
-    things = [o["placed"] for o in plan["objects"]] + [f["placed"] for f in plan["figures"]]
-    for p in things:
-        if p["centreM"][2] > 0.01:
-            continue
-        size = p["sizeM"]
-        height = size[2]
-        reach = min(height / max(math.tan(elevation), 1e-3), 4 * height)
-        half = 0.5 * math.hypot(size[0], size[1])
-        base = Vector((p["centreM"][0], p["centreM"][1], 0.0))
-        for kind, sign, share in (("shadow", -1.0, 0.35), ("shadow", -1.0, 0.7), ("sunny", 1.0, 0.35), ("sunny", 1.0, 0.7)):
-            point = base + level * sign * (half + share * reach) + Vector((0, 0, 0.001))
-            v = world_to_camera_view(scene, cam, point)
-            if v.z <= 0 or not (0 <= v.x <= 1 and 0 <= v.y <= 1):
+
+    # 1. The ground beside each thing on it (not when the light is overhead: the shadow is at its foot).
+    level = Vector((toward.x, toward.y, 0.0))
+    if level.length > 1e-6:
+        level.normalize()
+        elevation = math.asin(max(-1.0, min(1.0, toward.z)))
+        things = [o["placed"] for o in plan["objects"]] + [f["placed"] for f in plan["figures"]]
+        for p in things:
+            if p["centreM"][2] > 0.01:
                 continue
-            direction = point - origin
-            hit, location, _, _, hit_obj, _ = scene.ray_cast(depsgraph, origin, direction.normalized(), distance=direction.length + 0.01)
-            if not hit or hit_obj.name not in grounds or (location - point).length > 0.05 * direction.length + 0.05:
+            size = p["sizeM"]
+            height = size[2]
+            reach = min(height / max(math.tan(elevation), 1e-3), 4 * height)
+            half = 0.5 * math.hypot(size[0], size[1])
+            base = Vector((p["centreM"][0], p["centreM"][1], 0.0))
+            for kind, sign, share in (("shadow", -1.0, 0.35), ("shadow", -1.0, 0.7), ("sunny", 1.0, 0.35), ("sunny", 1.0, 0.7)):
+                point = base + level * sign * (half + share * reach) + Vector((0, 0, 0.001))
+                v = world_to_camera_view(scene, cam, point)
+                if v.z <= 0 or not (0 <= v.x <= 1 and 0 <= v.y <= 1):
+                    continue
+                direction = point - origin
+                hit, location, _, _, hit_obj, _ = scene.ray_cast(
+                    depsgraph, origin, direction.normalized(), distance=direction.length + 0.01
+                )
+                if not hit or hit_obj.name not in grounds or (location - point).length > 0.05 * direction.length + 0.05:
+                    continue
+                x, y = int(v.x * (w - 1)), int((1 - v.y) * (h - 1))
+                results[kind][1] += 1
+                if bool(shadow[y, x]) == (kind == "shadow"):
+                    results[kind][0] += 1
+
+    # 2. A grid over the picture: what the camera sees there, turned to the light or not, hidden from it or not.
+    faces = {"shadow": [0, 0], "sunny": [0, 0]}
+    rays = _around(toward, light.get("angleDeg", 0.0))
+    tr, br, bl, tl = (cam.matrix_world @ v for v in cam.data.view_frame(scene=scene))
+    nx, ny = GRID
+    for j in range(ny):
+        for i in range(nx):
+            u, t = (i + 0.5) / nx, (j + 0.5) / ny
+            target = tl.lerp(tr, u).lerp(bl.lerp(br, u), t)
+            direction = (target - origin).normalized()
+            hit, location, normal, _, hit_obj, _ = scene.ray_cast(depsgraph, origin, direction, distance=1e5)
+            if not hit:
                 continue
+            if normal.dot(direction) > 0:
+                normal = -normal
+            v = world_to_camera_view(scene, cam, location)
             x, y = int(v.x * (w - 1)), int((1 - v.y) * (h - 1))
-            results[kind][1] += 1
+            if not (0 <= x < w and 0 <= y < h) or _edge(shadow, x, y, edge):
+                continue
+            facing = normal.dot(toward)
+            start = location + normal * (1e-3 + 1e-4 * (location - origin).length)
+            hidden = [scene.ray_cast(depsgraph, start, ray, distance=1e5)[0] for ray in rays]
+            if facing < FACE_AWAY or all(hidden):
+                kind = "shadow"
+            elif facing > FACE_LIT and not any(hidden):
+                kind = "sunny"
+            else:
+                continue  # grazing, or in a soft shadow's half-light
+            faces[kind][1] += 1
             if bool(shadow[y, x]) == (kind == "shadow"):
-                results[kind][0] += 1
-    tested = results["shadow"][1] + results["sunny"][1]
-    ok = all(n == 0 or good / n >= 0.75 for good, n in results.values())
+                faces[kind][0] += 1
+
+    tested = sum(n for _, n in results.values()) + sum(n for _, n in faces.values())
+    if not tested:
+        return _skipped("コマの中に試せる点がない")
+    ok = all(n == 0 or good / n >= GROUND_SHARE for good, n in results.values()) and all(
+        n == 0 or good / n >= FACE_SHARE for good, n in faces.values()
+    )
+    words = []
+    if results["shadow"][1] or results["sunny"][1]:
+        words.append(f"地面 影の側 {results['shadow'][0]}/{results['shadow'][1]}・日なたの側 {results['sunny'][0]}/{results['sunny'][1]}")
+    words.append(f"面 影 {faces['shadow'][0]}/{faces['shadow'][1]}・日なた {faces['sunny'][0]}/{faces['sunny'][1]}")
     return {
         "name": "影の向き",
         "pass": ok,
         "tested": tested,
         "shadowSide": results["shadow"],
         "sunnySide": results["sunny"],
-        "note": f"影の側 {results['shadow'][0]}/{results['shadow'][1]}・日なたの側 {results['sunny'][0]}/{results['sunny'][1]}",
+        "faces": {"shadow": faces["shadow"], "sunny": faces["sunny"]},
+        "note": "・".join(words),
     }

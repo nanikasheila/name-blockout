@@ -15,7 +15,7 @@ from .camera import AXES, DEFAULT_HEIGHT_M, Camera, CameraError, fit_camera
 from .far import BAND_LABELS, FAR_M, NEAR_M, band_of, far_layers, level_distance, panorama_width_needed, parallax_free_m
 from .imagesize import image_size
 from .instruction import Frame, frame_of
-from .look import lighting
+from .look import lighting, setting_of
 from .materials import assign
 from .scope import hashes, object_hashes
 from .sizes import usual_size
@@ -325,10 +325,11 @@ def build_develop_plan(data: dict, shot: dict, instruction_path: str | Path | No
     frame = frame_of(shot["frame"])
     plan = build_plan(data, shot, instruction_path, min(dpi or DEVELOP_DPI, frame.dpi))
     camera = plan["camera"]
-    light, light_assumed = lighting(shot.get("look"), camera["headingDeg"])
-    materials, material_assumed = assign(shot)
+    setting, setting_assumed = setting_of(shot)
+    light, light_assumed = lighting(shot.get("look"), camera["headingDeg"], setting)
+    materials, material_assumed = assign(shot, setting)
     plan["develop"] = {"lighting": light, "materials": materials}
-    plan["assumptions"] += light_assumed + material_assumed
+    plan["assumptions"] += ([setting_assumed] if setting_assumed else []) + light_assumed + material_assumed
     passes = ["完成", "線画", "トーン", "影"] + (["遠景"] if "遠景" in plan["render"]["passes"] else [])
     plan["render"]["passes"] = passes
     return plan

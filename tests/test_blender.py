@@ -108,6 +108,19 @@ def test_develop_example(tmp_path):
     check = json.loads(Path(r["check"]).read_text(encoding="utf-8"))
     light = next(c for c in check["checks"] if c["name"] == "影の向き")
     assert r["pass"] and light["pass"] and light["tested"] >= 2, light
+    assert light["faces"]["shadow"][1] >= 20 and light["faces"]["sunny"][1] >= 20, light
+    # The check sees a wrong light: the shadows the other way round fail it (the scene is still the one built).
+    from name_blockout.blender.develop import shadow_check
+
+    plan = json.loads((tmp_path / "blockout" / "panel1" / "1" / "plan.json").read_text(encoding="utf-8"))
+    mask = bpy.data.images.load(str(tmp_path / "案" / "panel1" / "1" / "影.png"))
+    fw, fh = mask.size
+    shown = [a > 0.1 for a in mask.pixels[3::4]]
+    import numpy as np
+
+    shadow = np.array(shown, dtype=bool).reshape(fh, fw)[::-1]
+    assert shadow_check(plan, None, shadow, None, sun=True)["pass"]
+    assert not shadow_check(plan, None, ~shadow, None, sun=True)["pass"]
     assert set(r["files"]) == {"完成", "線画", "トーン", "影"}
     assert r["note"].startswith("開発（光と材質、name-blockout）: 午後・晴れ・日差しは")
     shade = bpy.data.images.load(str(tmp_path / "案" / "panel1" / "1" / "影.png"))
@@ -118,3 +131,32 @@ def test_develop_example(tmp_path):
     # A Blockout of the same shot does not count as the development's last build.
     again = run_blockout(tmp_path / "指示.json", preview_dpi=60, only_changed=True, log=lambda *_: None, develop=True)
     assert again[0]["status"] == "unchanged"
+
+
+@needs_blender
+def test_develop_indoors_and_beta(tmp_path):
+    """A sofa indoors under a window, painted black: lit from the window, its lines drawn white over the ベタ."""
+    import bpy
+    import numpy as np
+
+    from name_blockout.pipeline import run_blockout
+
+    data = json.loads((ROOT / "examples" / "develop" / "指示.json").read_text(encoding="utf-8"))
+    shot = data["shots"][0]
+    shot["objects"][0]["label"] = "ソファ"
+    shot["look"] = {"timeOfDay": "evening", "light": {"key": "window"}, "materials": [{"target": "o1", "material": "黒い塗装"}]}
+    (tmp_path / "指示.json").write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    r = run_blockout(tmp_path / "指示.json", preview_dpi=60, log=lambda *_: None, develop=True)[0]
+    assert r["pass"], r["note"]
+    assert "屋内・夕方・明かりは窓から" in r["note"] and "look.materials/ground=木" in r["note"]
+
+    def load(name):
+        image = bpy.data.images.load(str(tmp_path / "案" / "panel1" / "1" / f"{name}.png"))
+        w, h = image.size
+        return np.array(image.pixels[:], dtype=np.float32).reshape(h, w, 4)
+
+    tone, done, lines = load("トーン"), load("完成"), load("線画")
+    beta = (tone[..., 3] > 0.5) & (tone[..., :3].max(axis=-1) < 0.05)
+    assert beta.sum() > 1000
+    drawn = beta & (lines[..., 3] > 0.5)
+    assert drawn.sum() > 10 and (done[drawn][:, 0] > 0.5).mean() > 0.8

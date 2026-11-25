@@ -165,3 +165,18 @@ def test_develop_light_against_the_key():
     assert "look.key" not in {f["code"] for f in check_instruction(data)}
     look["materials"].append({"target": "o2", "material": "ないもの"})
     assert "look.material-unknown" in {f["code"] for f in check_instruction(data)}
+
+
+def test_develop_indoors_from_the_words():
+    """A sofa puts the shot indoors (asked once); indoors the sun's questions are not asked, the light's is."""
+    data = json.loads(DEVELOP.read_text(encoding="utf-8"))
+    shot = data["shots"][0]
+    shot["objects"][0]["label"] = "ソファ"
+    shot["look"].pop("north")
+    found = {f["code"]: f for f in check_instruction(data)}
+    assert found["look.setting"]["question"]["options"][0]["set"] == {"look.setting": "indoor"}
+    assert found["look.indoor-key"]["question"]["options"][0]["set"] == {"look.light.key": "interior"}
+    assert not {"look.north", "look.key", "look.location", "look.date"} & set(found)
+    shot["look"]["setting"] = "outdoor"
+    found = {f["code"] for f in check_instruction(data)}
+    assert "look.setting" not in found and "look.indoor-key" not in found and "look.north" in found

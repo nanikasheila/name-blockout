@@ -19,7 +19,7 @@ from .camera import DEFAULT_HEIGHT_M, CameraError, fit_camera, hint_differences
 from .far import panorama_width_needed
 from .imagesize import image_size
 from .instruction import frame_of, pixels
-from .look import KEY_LABELS, PLACES, lighting, norths_for_key
+from .look import KEY_LABELS, PLACES, indoor_words, lighting, norths_for_key, setting_of
 from .materials import DEFAULT, LIBRARY, guess
 from .plan import folder_of, instruction_dir, targets, vanishing_axes
 from .sizes import usual_size
@@ -443,6 +443,38 @@ def _look_findings(shot: dict, look: dict, camera) -> list[dict]:
     the author asked for, and the things without a material."""
     out = []
     word = look.get("timeOfDay")
+    setting, _ = setting_of(shot)
+    key = (look.get("light") or {}).get("key")
+    if not look.get("setting"):
+        words = indoor_words(shot)
+        if words:
+            out.append(
+                finding(
+                    "look.setting",
+                    "info",
+                    shot,
+                    "look.setting",
+                    f"屋内か屋外か決まっていません。{'・'.join(words[:3])} から屋内として、床と室内の明かりで組みます",
+                    question("このコマは？", [("屋内", {"look.setting": "indoor"}), ("屋外", {"look.setting": "outdoor"})], 0),
+                )
+            )
+    if setting == "indoor":
+        if key not in ("window", "interior", "street", "front", "back", "side-left", "side-right", "top"):
+            out.append(
+                finding(
+                    "look.indoor-key",
+                    "info",
+                    shot,
+                    "look.light.key",
+                    "屋内の明かりが決まっていません。天井の明かり（上からやわらかく）で照らします",
+                    question(
+                        "明かりは？",
+                        [(KEY_LABELS[k], {"look.light.key": k}) for k in ("interior", "window", "street")],
+                        0,
+                    ),
+                )
+            )
+        return out + _material_findings(shot, look)
     if word and word != "night":
         if not look.get("location"):
             out.append(
@@ -473,7 +505,6 @@ def _look_findings(shot: dict, look: dict, camera) -> list[dict]:
     if camera is not None and (word or (look.get("light") or {}).get("key")):
         light, _ = lighting(look, camera.heading_deg)
         sun = light.get("sun")
-        key = (look.get("light") or {}).get("key")
         if sun and word and key in KEY_LABELS and key != "top" and sun["strength"] and sun["side"] != key:
             norths = norths_for_key(key, camera.heading_deg, sun["azimuthDeg"])
             out.append(
@@ -507,6 +538,12 @@ def _look_findings(shot: dict, look: dict, camera) -> list[dict]:
                     question("日差しはどちらから？", options[:4], 0) if options else None,
                 )
             )
+    return out + _material_findings(shot, look)
+
+
+def _material_findings(shot: dict, look: dict) -> list[dict]:
+    """Materials named that the library lacks, and the things without one."""
+    out = []
     given = {m["target"]: m["material"] for m in (look.get("materials") or [])}
     for target, name in given.items():
         if name not in LIBRARY:

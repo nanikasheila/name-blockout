@@ -94,3 +94,25 @@ def test_answers_reach_lists():
     assert set_path(shot, "far/0/asset", "曇り空") and shot["far"][0]["asset"] == "曇り空"
     out, replaced = effective({"objects": shot["objects"]}, {"look.materials/a": "木", "look.north": "+X"})
     assert out["look"] == {"materials": [{"target": "a", "material": "木"}], "north": "+X"} and replaced == []
+
+
+def test_indoors_the_light_is_the_room_s():
+    from name_blockout.look import setting_of
+
+    shot = {"objects": [{"id": "o1", "label": "ソファ"}], "look": {"timeOfDay": "evening"}}
+    setting, assumed = setting_of(shot)
+    assert setting == "indoor" and assumed["path"] == "look.setting" and "ソファ" in assumed["note"]
+    light, notes = lighting(shot["look"], 90.0, setting)
+    assert light["setting"] == "indoor" and light["sun"]["side"] == "interior" and light["sun"]["strength"] > 0
+    assert light["sun"]["elevationDeg"] == 80.0 and light["sun"]["angleDeg"] >= 20
+    assert [n["path"] for n in notes] == ["look.weather", "look.light.key"]
+    # Through a window: low, from the left of the view; none at night.
+    window, _ = lighting({"timeOfDay": "noon", "light": {"key": "window"}}, 90.0, "indoor")
+    assert window["sun"]["elevationDeg"] == 20.0 and window["sun"]["side"] == "window"
+    assert window["sun"]["direction"][0] < -0.9  # looking along +Y, the light comes from the left (−X)
+    night, _ = lighting({"timeOfDay": "night", "light": {"key": "window"}}, 90.0, "indoor")
+    assert night["sun"]["strength"] == 0.0 and night["sky"]["strength"] == 0.0
+    # Said outdoors, it stays outdoors.
+    assert setting_of({"objects": [{"id": "o1", "label": "ソファ"}], "look": {"setting": "outdoor"}}) == ("outdoor", None)
+    floor, _ = assign(shot, "indoor")
+    assert floor["ground"]["name"] == "木" and floor["o1"]["name"] == "布"

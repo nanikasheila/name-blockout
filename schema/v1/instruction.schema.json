@@ -289,6 +289,10 @@
           "type": "object",
           "properties": {
             "timeOfDay": { "enum": ["dawn", "morning", "noon", "afternoon", "evening", "dusk", "night"] },
+            "setting": {
+              "description": "屋外か屋内か。屋内では時間帯の太陽ではなく light.key の明かり（窓・天井・街灯、既定は天井）で照らし、地面は床になる。なければ物の名前などの言葉から道具が仮に決める。",
+              "enum": ["outdoor", "indoor"]
+            },
             "date": { "description": "日付（YYYY-MM-DD）。季節の太陽の高さに使う。", "type": "string" },
             "location": {
               "type": "object",
