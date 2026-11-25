@@ -1,0 +1,183 @@
+{
+ "$schema": "../../schema/v1/instruction.schema.json",
+ "format": "name-blockout/instruction",
+ "formatVersion": 1,
+ "createdBy": {
+  "app": "hand",
+  "version": "0"
+ },
+ "request": {
+  "id": "example-develop",
+  "note": "例: 開発（夕方の光と材質）"
+ },
+ "work": {
+  "title": "例",
+  "paperMm": [
+   257,
+   364
+  ],
+  "binding": "right"
+ },
+ "shots": [
+  {
+   "id": "panel1",
+   "label": "p1 コマ1",
+   "page": 1,
+   "order": 1,
+   "frame": {
+    "boxMm": [
+     17,
+     17,
+     240,
+     137
+    ],
+    "dpi": 600,
+    "shapeMm": [
+     [
+      20,
+      20
+     ],
+     [
+      237,
+      20
+     ],
+     [
+      237,
+      134
+     ],
+     [
+      20,
+      134
+     ]
+    ]
+   },
+   "intent": {
+    "brief": "街角。左に倉庫、右奥に小屋",
+    "camera": "eye"
+   },
+   "ruler": {
+    "points": 2,
+    "horizonMm": [
+     [
+      20,
+      88
+     ],
+     [
+      237,
+      88
+     ]
+    ],
+    "vanishingMm": [
+     [
+      -60,
+      88
+     ],
+     [
+      330,
+      88
+     ]
+    ]
+   },
+   "camera": {
+    "heightM": 1.5
+   },
+   "objects": [
+    {
+     "id": "o1",
+     "label": "倉庫",
+     "shapeMm": [
+      [
+       30,
+       40
+      ],
+      [
+       120,
+       40
+      ],
+      [
+       120,
+       120
+      ],
+      [
+       30,
+       120
+      ]
+     ]
+    },
+    {
+     "id": "o2",
+     "label": "小屋",
+     "shapeMm": [
+      [
+       160,
+       70
+      ],
+      [
+       215,
+       70
+      ],
+      [
+       215,
+       100
+      ],
+      [
+       160,
+       100
+      ]
+     ],
+     "axis": 2
+    }
+   ],
+   "figures": [
+    {
+     "id": "f1",
+     "name": "人",
+     "heightM": 1.6,
+     "shapeMm": [
+      [
+       125,
+       80
+      ],
+      [
+       137,
+       80
+      ],
+      [
+       137,
+       128
+      ],
+      [
+       125,
+       128
+      ]
+     ]
+    }
+   ],
+   "stage": "develop",
+   "look": {
+    "timeOfDay": "afternoon",
+    "date": "2026-11-26",
+    "location": {
+     "latDeg": 35.68,
+     "lonDeg": 139.77
+    },
+    "north": "+Y",
+    "weather": "clear",
+    "materials": [
+     {
+      "target": "o1",
+      "material": "トタン"
+     },
+     {
+      "target": "o2",
+      "material": "木"
+     },
+     {
+      "target": "ground",
+      "material": "アスファルト"
+     }
+    ]
+   }
+  }
+ ]
+}

@@ -147,7 +147,9 @@ def summary_words(result: dict) -> str:
     """One line for 背景.json's note and people: what was checked and how far off."""
     parts = []
     for c in result["checks"]:
-        if c["value"] is None:
+        if c.get("unit") == "words":
+            parts.append(f"{c['name']} {c.get('note', '')}")
+        elif c["value"] is None:
             parts.append(f"{c['name']}: 測れず")
         elif c.get("unit") == "deg":
             parts.append(f"{c['name']} {c['value']:.2f}°")

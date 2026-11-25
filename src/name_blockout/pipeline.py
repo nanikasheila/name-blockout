@@ -12,7 +12,8 @@ from pathlib import Path
 
 from .checks import check_shot, is_buildable
 from .instruction import read_instruction
-from .plan import build_plan, folder_of, instruction_dir
+from .look import KEY_LABELS
+from .plan import build_develop_plan, build_plan, folder_of, instruction_dir
 from .requirement import current, effective, read_requirement
 from .scope import redo_scope
 from .takes import TAKES_DIR, WORK_DIR, add_take, next_take
@@ -35,12 +36,32 @@ def write_json(path: Path, value) -> None:
     path.write_text(json.dumps(value, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
 
 
-def last_built(folder: Path, shot_id: str) -> dict | None:
+def last_built(folder: Path, shot_id: str, mode: str = "blockout") -> dict | None:
+    """What was built last for a shot in this mode (blockout / develop)."""
     root = folder / WORK_DIR / shot_id
     if not root.is_dir():
         return None
     takes = sorted((p for p in root.iterdir() if p.name.isdigit() and (p / "built.json").exists()), key=lambda p: int(p.name))
-    return json.loads((takes[-1] / "built.json").read_text(encoding="utf-8")) if takes else None
+    for take in reversed(takes):
+        built = json.loads((take / "built.json").read_text(encoding="utf-8"))
+        if built.get("mode", "blockout") == mode:
+            return built
+    return None
+
+
+TIME_WORDS = {"dawn": "明け方", "morning": "朝", "noon": "昼", "afternoon": "午後", "evening": "夕方", "dusk": "日暮れ", "night": "夜"}
+WEATHER_WORDS = {"clear": "晴れ", "cloudy": "くもり", "overcast": "どんより", "rain": "雨", "snow": "雪", "fog": "霧", "haze": "かすみ"}
+
+
+def light_words(light: dict) -> str:
+    """The light in a few words: 夕方・晴れ・太陽は左から 12°."""
+    parts = [TIME_WORDS.get(light.get("timeOfDay"), ""), WEATHER_WORDS.get(light.get("weather"), "")]
+    sun = light.get("sun")
+    if sun and sun.get("strength"):
+        parts.append(f"日差しは{KEY_LABELS.get(sun.get('side'), '')}・高さ {sun['elevationDeg']:.0f}°")
+    elif light.get("timeOfDay"):
+        parts.append("日差しなし")
+    return "・".join(p for p in parts if p)
 
 
 def run_blockout(
@@ -53,12 +74,17 @@ def run_blockout(
     only_changed: bool = False,
     render: bool = True,
     log=print,
+    develop: bool = False,
 ) -> list[dict]:
+    """The design phase (Blockout) for the shots; with `develop`, the development: the same camera and layout, with
+    the light and materials (by default only the shots whose stage is develop)."""
     import bpy
 
     from .blender import measure as bmeasure
     from .blender import render as brender
     from .blender import scene as bscene
+
+    mode = "develop" if develop else "blockout"
 
     instruction_path = Path(instruction_path).resolve()
     data = read_instruction(instruction_path)
@@ -67,6 +93,8 @@ def run_blockout(
     reports = []
     for raw in data["shots"]:
         if shots and raw["id"] not in shots:
+            continue
+        if develop and not shots and raw.get("stage") != "develop":
             continue
         label = raw.get("label", raw["id"])
         if (raw.get("intent") or {}).get("none"):
@@ -82,14 +110,14 @@ def run_blockout(
             )
             log(f"{label}: 点検でエラーがあるので組みません（--force で組む）")
             continue
-        before = last_built(folder, shot["id"])
+        before = last_built(folder, shot["id"], mode)
         scope = redo_scope(before.get("shot") if before else None, shot)
-        if only_changed and scope["redo"] != "design":
+        if only_changed and (scope["redo"] == "none" or (not develop and scope["redo"] != "design")):
             reports.append({"shot": shot["id"], "label": label, "status": "unchanged", "scope": scope})
-            log(f"{label}: 設計に関わる変更がないので組み直しません（{scope['redo']}）")
+            log(f"{label}: {'変更' if develop else '設計に関わる変更'}がないので組み直しません（{scope['redo']}）")
             continue
         started = time.time()
-        plan = build_plan(data, shot, instruction_path, preview_dpi)
+        plan = (build_develop_plan if develop else build_plan)(data, shot, instruction_path, preview_dpi)
         number = take or (shot.get("output") or {}).get("take") or next_take(folder, shot["id"])
         work = folder / WORK_DIR / shot["id"] / number
         takes_dir = folder / TAKES_DIR / shot["id"] / number
@@ -100,7 +128,18 @@ def run_blockout(
         write_json(work / "measured.json", measured)
         write_json(work / "check.json", result)
         files = {}
-        if render:
+        if render and develop:
+            from .blender import develop as bdevelop
+
+            rendered, light_check = bdevelop.develop_passes(plan, built, work / "render")
+            result["checks"].append({"name": "影の向き", "value": None, "unit": "words", **light_check})
+            result["pass"] = result["pass"] and light_check["pass"]
+            write_json(work / "check.json", result)
+            takes_dir.mkdir(parents=True, exist_ok=True)
+            for name, path in rendered.items():
+                shutil.copyfile(path, takes_dir / f"{name}.png")
+                files[name] = f"{TAKES_DIR}/{shot['id']}/{number}/{name}.png"
+        elif render:
             rendered = brender.render_passes(plan, work / "render", passes=plan["render"]["passes"])
             takes_dir.mkdir(parents=True, exist_ok=True)
             for name, path in rendered.items():
@@ -108,7 +147,12 @@ def run_blockout(
                 files[name] = f"{TAKES_DIR}/{shot['id']}/{number}/{name}.png"
         bpy.ops.wm.save_as_mainfile(filepath=str(work / "scene.blend"), compress=True)
         assumed = "・".join(f"{a['path']}={a['value']}" for a in plan["assumptions"])
-        note = f"Blockout（箱のあたり、name-blockout）。{summary_words(result)}" + (f"。仮: {assumed}" if assumed else "")
+        head = (
+            f"開発（光と材質、name-blockout）: {light_words(plan['develop']['lighting'])}"
+            if develop
+            else "Blockout（箱のあたり、name-blockout）"
+        )
+        note = f"{head}。{summary_words(result)}" + (f"。仮: {assumed}" if assumed else "")
         credits = [c["credit"] for c in plan.get("credits", []) if c.get("needsCredit")]
         if credits:
             note += "。クレジット: " + " / ".join(credits)
@@ -133,6 +177,7 @@ def run_blockout(
             work / "built.json",
             {
                 "shot": shot,
+                "mode": mode,
                 "requirementVersion": (version or {}).get("version"),
                 "hashes": plan["hashes"],
                 "take": number,

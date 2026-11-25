@@ -132,3 +132,36 @@ def test_panorama_checks(tmp_path):
     data["shots"][0]["far"] = [{"kind": "panorama", "asset": "ない"}]
     found = {f["code"]: f for f in check_instruction(data)}
     assert found["far.asset"]["question"]["options"][0]["set"] == {"far/0/asset": "空"}
+
+
+DEVELOP = Path(__file__).resolve().parents[1] / "examples" / "develop" / "指示.json"
+
+
+def test_develop_example_is_clean():
+    data = json.loads(DEVELOP.read_text(encoding="utf-8"))
+    assert {f["code"] for f in check_instruction(data) if f["level"] != "info"} == set()
+
+
+def test_develop_asks_for_the_light():
+    data = json.loads(DEVELOP.read_text(encoding="utf-8"))
+    look = data["shots"][0]["look"]
+    for key in ("location", "date", "north", "materials"):
+        look.pop(key)
+    found = {f["code"]: f for f in check_instruction(data)}
+    assert {"look.location", "look.date", "look.north", "look.materials"} <= set(found)
+    assert found["look.materials"]["question"]["options"][0]["set"] == {"look.materials/o1": "トタン"}
+    sides = [o["label"] for o in found["look.north"]["question"]["options"]]
+    assert sides and all(label.startswith("日差しを") for label in sides)
+
+
+def test_develop_light_against_the_key():
+    data = json.loads(DEVELOP.read_text(encoding="utf-8"))
+    look = data["shots"][0]["look"]
+    look["light"] = {"key": "back"}
+    found = {f["code"]: f for f in check_instruction(data)}
+    assert found["look.key"]["level"] == "warn"
+    north = found["look.key"]["question"]["options"][0]["set"]["look.north"]
+    look["north"] = north
+    assert "look.key" not in {f["code"] for f in check_instruction(data)}
+    look["materials"].append({"target": "o2", "material": "ないもの"})
+    assert "look.material-unknown" in {f["code"] for f in check_instruction(data)}

@@ -33,11 +33,24 @@ def _split(path: str) -> list[str]:
     return [p for p in path.replace("/", ".").split(".") if p]
 
 
+def _item(items: list, key: str):
+    """The item of a list a path names: by its id, by its target (look.materials), or by its place (far/0)."""
+    for item in items:
+        if isinstance(item, dict) and (item.get("id") == key or item.get("target") == key):
+            return item
+    if key.isdigit() and int(key) < len(items):
+        return items[int(key)]
+    return None
+
+
 def get_path(shot: dict, path: str):
     node = shot
-    for key in _split(path):
+    keys = _split(path)
+    for i, key in enumerate(keys):
         if isinstance(node, list):
-            node = next((item for item in node if isinstance(item, dict) and item.get("id") == key), None)
+            item = _item(node, key)
+            # look.materials/<target>: the material named for it
+            node = item.get("material") if (item is not None and i == len(keys) - 1 and "target" in item) else item
         elif isinstance(node, dict):
             node = node.get(key)
         else:
@@ -48,22 +61,31 @@ def get_path(shot: dict, path: str):
 
 
 def set_path(shot: dict, path: str, value) -> bool:
-    """Set `path` (a.b.c, or objects/<id>/field) in `shot`; False when a list item it names is missing."""
+    """Set `path` (a.b.c, or objects/<id>/field, far/<n>/field, look.materials/<target>) in `shot`; False when a list
+    item it names is missing."""
     keys = _split(path)
     node = shot
     for key in keys[:-1]:
         if isinstance(node, list):
-            item = next((it for it in node if isinstance(it, dict) and it.get("id") == key), None)
+            item = _item(node, key)
             if item is None:
                 return False
             node = item
             continue
         if key not in node or node[key] is None:
-            if key in ("objects", "figures"):
+            if key in ("objects", "figures", "far"):
                 return False
-            node[key] = {}
+            node[key] = [] if key == "materials" else {}
         node = node[key]
     if isinstance(node, list):
+        # look.materials/<target> = name: that thing's material (added when it has none).
+        item = _item(node, keys[-1])
+        if item is not None and "target" in item:
+            item["material"] = value
+            return True
+        if item is None and all(isinstance(it, dict) and "target" in it for it in node):
+            node.append({"target": keys[-1], "material": value})
+            return True
         return False
     node[keys[-1]] = value
     return True
