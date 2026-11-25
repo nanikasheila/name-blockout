@@ -55,6 +55,8 @@ FACE_SHARE = 0.85
 #: A face lit squarer than this to the light must be lit; one turned away past this must be in shadow.
 FACE_LIT = 0.3
 FACE_AWAY = -0.02
+#: A light higher than this (degrees) is overhead: the ground beside a thing is not checked, its shadow is at its foot.
+OVERHEAD_DEG = 70.0
 
 
 def _emission(name: str, grey: float):
@@ -320,11 +322,13 @@ def shadow_check(plan: dict, built: dict, shadow: np.ndarray, lit: np.ndarray, s
     edge = max(2, round(min(w, h) / 200))
     results = {"shadow": [0, 0], "sunny": [0, 0]}
 
-    # 1. The ground beside each thing on it (not when the light is overhead: the shadow is at its foot).
+    # 1. The ground beside each thing on it (not when the light is nearly overhead: the shadow is at its foot, and a
+    # soft light blurs that much); each point only where the light is wholly hidden from it or wholly not.
+    rays = _around(toward, light.get("angleDeg", 0.0))
     level = Vector((toward.x, toward.y, 0.0))
-    if level.length > 1e-6:
+    elevation = math.asin(max(-1.0, min(1.0, toward.z)))
+    if level.length > 1e-6 and math.degrees(elevation) <= OVERHEAD_DEG:
         level.normalize()
-        elevation = math.asin(max(-1.0, min(1.0, toward.z)))
         things = [o["placed"] for o in plan["objects"]] + [f["placed"] for f in plan["figures"]]
         for p in things:
             if p["centreM"][2] > 0.01:
@@ -345,6 +349,10 @@ def shadow_check(plan: dict, built: dict, shadow: np.ndarray, lit: np.ndarray, s
                 )
                 if not hit or hit_obj.name not in grounds or (location - point).length > 0.05 * direction.length + 0.05:
                     continue
+                start = location + Vector((0, 0, 1e-3 + 1e-4 * direction.length))
+                hidden = [scene.ray_cast(depsgraph, start, ray, distance=1e5)[0] for ray in rays]
+                if (kind == "shadow" and not all(hidden)) or (kind == "sunny" and any(hidden)):
+                    continue  # in a soft shadow's half-light, or lit or shaded by something else
                 x, y = int(v.x * (w - 1)), int((1 - v.y) * (h - 1))
                 results[kind][1] += 1
                 if bool(shadow[y, x]) == (kind == "shadow"):
@@ -352,7 +360,6 @@ def shadow_check(plan: dict, built: dict, shadow: np.ndarray, lit: np.ndarray, s
 
     # 2. A grid over the picture: what the camera sees there, turned to the light or not, hidden from it or not.
     faces = {"shadow": [0, 0], "sunny": [0, 0]}
-    rays = _around(toward, light.get("angleDeg", 0.0))
     tr, br, bl, tl = (cam.matrix_world @ v for v in cam.data.view_frame(scene=scene))
     nx, ny = GRID
     for j in range(ny):

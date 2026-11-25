@@ -204,3 +204,24 @@ def test_answered_questions_are_not_asked_again(tmp_path):
     )
     asked = {q["path"] for q in json.loads(out.stdout)["questions"]}
     assert first[0]["path"] not in asked
+
+
+def test_a_height_no_eye_could_be_at_is_not_offered():
+    """Indoors, a size that puts the eye above the ceiling is told (warn) and not offered, let alone recommended."""
+    data = example()
+    shot = data["shots"][0]
+    del shot["camera"]
+    shot["look"] = {"setting": "indoor"}
+    shot["figures"][0]["heightM"] = 4.0  # drawn as tall as a 4 m giant: the eye would be near 4 m
+    findings = check_instruction(data)
+    odd = [f for f in findings if f["code"] == "camera.height-odd"]
+    assert odd and odd[0]["level"] == "warn" and "屋内" in odd[0]["message"], odd
+    q = pick_questions(findings, 2)
+    labels = [o["label"] for o in q[0]["options"]]
+    assert not any("人物" in label for label in labels), labels
+    recommended = q[0]["options"][q[0]["recommended"]]["set"]["camera.heightM"]
+    assert 0.1 <= recommended <= 2.6, labels
+    # Outdoors the same eye is fine (a first floor window).
+    shot["look"] = {"setting": "outdoor"}
+    findings = check_instruction(data)
+    assert not [f for f in findings if f["code"] == "camera.height-odd"]

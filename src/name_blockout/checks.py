@@ -26,6 +26,10 @@ from .sizes import usual_size
 from .solve import DEFAULT_FIGURE_M, camera_height_from_figure, fit_box
 from .vec import box_iou, point_line_distance
 
+# Where an eye can be, indoors (floor to under the ceiling) and out (the ground to a high roof), in metres.
+EYE_HEIGHTS = {"indoor": (0.1, 2.6), "outdoor": (0.05, 60.0)}
+SETTING_WORDS = {"indoor": "屋内", "outdoor": "屋外"}
+
 LEVELS = ("error", "warn", "info")
 TIMES = ["dawn", "morning", "noon", "afternoon", "evening", "dusk", "night"]
 TIME_LABELS = {"dawn": "明け方", "morning": "朝", "noon": "昼", "afternoon": "午後", "evening": "夕方", "dusk": "日暮れ", "night": "夜"}
@@ -191,18 +195,40 @@ def check_shot(data: dict, shot: dict, base: Path | None = None) -> list[dict]:
     # --- the camera's height ----------------------------------------------------------------
     figures = shot.get("figures") or []
     if camera and "heightM" not in cam_cfg and "positionM" not in cam_cfg:
+        setting, _ = setting_of(shot)
+        low, high = EYE_HEIGHTS[setting]
         options = []
+        odd = []  # estimates no eye could be at here (a 物 drawn small, or the eye level drawn off)
         for fig in figures:
             if fig.get("cut"):
                 continue
             h = camera_height_from_figure(camera, frame.px_box(fig["shapeMm"]), float(fig.get("heightM") or DEFAULT_FIGURE_M))
             if h is not None and 0.05 < h < 200:
-                options.append((f"{round(h, 2)}m（人物「{fig.get('name') or fig['id']}」の大きさから）", {"camera.heightM": round(h, 2)}))
+                source = f"人物「{fig.get('name') or fig['id']}」の大きさから"
+                if low <= h <= high:
+                    options.append((f"{round(h, 2)}m（{source}）", {"camera.heightM": round(h, 2)}))
+                else:
+                    odd.append((round(h, 2), source))
                 break
         from_things = height_from_things(camera, shot, frame)
         if from_things is not None:
             h, names = from_things
-            options.append((f"{h}m（{'・'.join(names)}のふつうの大きさから）", {"camera.heightM": h}))
+            source = f"{'・'.join(names)}のふつうの大きさから"
+            if low <= h <= high:
+                options.append((f"{h}m（{source}）", {"camera.heightM": h}))
+            else:
+                odd.append((h, source))
+        for h, source in odd:
+            out.append(
+                finding(
+                    "camera.height-odd",
+                    "warn",
+                    shot,
+                    "camera.heightM",
+                    f"{source}だとカメラは {h}m になり、{SETTING_WORDS[setting]}の目の高さ（{low}〜{high}m）から外れます。"
+                    "描いた大きさか、アイレベルの位置を確かめてください",
+                )
+            )
         hints = "、".join(label for label, _ in options)
         options += [
             ("1.5m（立った人の目）", {"camera.heightM": 1.5}),

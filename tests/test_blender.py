@@ -160,3 +160,21 @@ def test_develop_indoors_and_beta(tmp_path):
     assert beta.sum() > 1000
     drawn = beta & (lines[..., 3] > 0.5)
     assert drawn.sum() > 10 and (done[drawn][:, 0] > 0.5).mean() > 0.8
+
+
+@needs_blender
+def test_develop_under_a_ceiling_light(tmp_path):
+    """Indoors under the room's light (nearly overhead, soft): the ground beside things is not checked, the faces are."""
+    from name_blockout.pipeline import run_blockout
+
+    data = json.loads((ROOT / "examples" / "develop" / "指示.json").read_text(encoding="utf-8"))
+    shot = data["shots"][0]
+    shot["objects"][0]["label"] = "ソファ"
+    shot["look"] = {"setting": "indoor", "timeOfDay": "evening", "light": {"key": "interior"}}
+    (tmp_path / "指示.json").write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    r = run_blockout(tmp_path / "指示.json", preview_dpi=60, log=lambda *_: None, develop=True)[0]
+    check = json.loads(Path(r["check"]).read_text(encoding="utf-8"))
+    light = next(c for c in check["checks"] if c["name"] == "影の向き")
+    assert r["pass"] and light["pass"], light
+    assert light["shadowSide"][1] == 0 and light["sunnySide"][1] == 0 and light["faces"]["sunny"][1] >= 20, light
+    assert "天井の明かり" in r["note"]
