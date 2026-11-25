@@ -77,3 +77,18 @@ def test_confirm_versions(tmp_path):
     second = confirm(tmp_path, s)
     assert second["version"] == 2 and second["hashes"]["develop"] != first["hashes"]["develop"]
     assert second["hashes"]["design"] == first["hashes"]["design"]
+
+
+def test_going_indoors_redoes_the_design():
+    """Indoors a room stands in the picture: turning a shot indoors, or its window's wall, redoes the Blockout."""
+    a = shot()
+    b = copy.deepcopy(a)
+    b["look"] = {"setting": "indoor"}
+    scope = redo_scope(a, b)
+    assert scope["redo"] == "design" and "room" in scope["changed"]
+    c = copy.deepcopy(b)
+    c["look"]["light"] = {"key": "window"}  # a window is put in for this light
+    assert redo_scope(b, c)["redo"] == "design"
+    d = copy.deepcopy(c)
+    d["look"]["timeOfDay"] = "evening"
+    assert redo_scope(c, d)["redo"] == "develop"

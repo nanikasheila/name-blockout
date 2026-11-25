@@ -39,6 +39,7 @@ name-studio などのネームの道具と name-blockout の間の約束です�
 | `objects` | 物: id・名前・範囲 `shapeMm`・素材 `asset`・大きさ `sizeM` [幅, 奥行, 高さ]・どの消失点へ向かうか `axis`（1/2）・向きの言葉 `facing`・見せたい面 `show`・地面に置くか `onGround`・距離帯 `band`（near/middle/far） | 設計 |
 | `figures` | 人物（あたりの人形）: 頭から足までの範囲 `shapeMm`・身長 `heightM`・姿勢 `pose`・向き・足が切れているか `cut` | 設計 |
 | `far` | 遠景の層（奥から）: 全天球の画像 `panorama`（素材の名前 `asset`・回す角度 `turnDeg`）、道具が作る街並み `skyline`・山並み `mountains`・木立 `trees`（距離 `distanceM`・高さの幅 `heightM`・種 `seed`） | 設計 |
+| `room` | 屋内の部屋: 天井の高さ `heightM`・窓 `windows`（壁 `wall` back/left/right/front・幅・高さ・床からの高さ `sillM`・ずれ `offsetM`）。屋内なら道具が作る。`false` で作らない | 設計 |
 | `look` | 開発の見た目: 時間帯 `timeOfDay`・日付・緯度経度・北の向き・天気・光の狙い `light`・材質の割り当て `materials` | 開発 |
 | `render` | 描き出し: 出すもの `passes`（完成・線画・トーン・遠景・影）・下見の解像度 `previewDpi` | 開発 |
 | `output` | 書く案の番号 `take`（なければ次の番号） | — |
@@ -69,6 +70,14 @@ name-blockout は定規から、ピンホールのカメラを次のように決
 | `materials` | `[{"target": 物の id か "ground", "material": ライブラリの名前}]` |
 
 数値への直し方と描き出しは [phases.md](phases.md#開発本番に近づける)。
+
+### 部屋（room、屋内）
+
+屋内（`look.setting` が indoor か、物の名前などの言葉から屋内）なら、道具が床・四方の壁・天井の部屋を作ります（`room.py`）。カメラと部屋の中の物（遠景の帯と 25m より先は外）を 0.5m の余裕で囲み、奥の壁はカメラから 2.7m 以上、幅も 2.7m 以上。天井は 2.4m（`heightM`、カメラか物が届くなら上げてメモ）。床は地面の代わりの格子（0.91m、半間）。壁の角と窓の縁は線に出て、消失点へ向かいます。
+
+窓は壁に穴を開け、壁の厚み（0.12m）の見込みを付けます。窓を書かなければ、光が窓から（`look.light.key` が window）のとき、画面の左に見える壁（まっすぐ見るなら左の壁、角を見るなら左側の壁）の、画面の左 3 分の 1 あたりに腰窓（幅 1.7m・高さ 1.1m・床から 0.9m）を 1 つ入れます（仮の値として残ります）。`windows: []` で窓なし。
+
+壁と天井は光を受けて影の面になりますが、影は落としません（屋内の明かりは光の狙いの向きで当てるので、壁で遮ると真っ暗になる）。材質は `walls`（既定は白壁）。屋内かどうか・窓は設計なので、変えると Blockout から組み直します。
 
 ### 距離帯と遠景
 

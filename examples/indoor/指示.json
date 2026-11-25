@@ -1,0 +1,200 @@
+{
+  "$schema": "../../schema/v1/instruction.schema.json",
+  "format": "name-blockout/instruction",
+  "formatVersion": 1,
+  "createdBy": {
+    "app": "hand",
+    "version": "0"
+  },
+  "request": {
+    "id": "example-indoor",
+    "note": "例: 屋内（部屋の壁と窓、窓からの光）"
+  },
+  "work": {
+    "title": "例",
+    "paperMm": [
+      257,
+      364
+    ],
+    "binding": "right"
+  },
+  "shots": [
+    {
+      "id": "panel1",
+      "label": "p1 コマ1",
+      "page": 1,
+      "order": 1,
+      "frame": {
+        "boxMm": [
+          17,
+          17,
+          240,
+          137
+        ],
+        "dpi": 600,
+        "shapeMm": [
+          [
+            20,
+            20
+          ],
+          [
+            237,
+            20
+          ],
+          [
+            237,
+            134
+          ],
+          [
+            20,
+            134
+          ]
+        ]
+      },
+      "intent": {
+        "brief": "居間。左にソファ、手前にテーブル、右奥に本棚",
+        "camera": "eye"
+      },
+      "ruler": {
+        "points": 2,
+        "horizonMm": [
+          [
+            20,
+            80
+          ],
+          [
+            237,
+            80
+          ]
+        ],
+        "vanishingMm": [
+          [
+            -40,
+            80
+          ],
+          [
+            300,
+            80
+          ]
+        ]
+      },
+      "camera": {
+        "heightM": 1.2
+      },
+      "objects": [
+        {
+          "id": "o1",
+          "label": "ソファ",
+          "shapeMm": [
+            [
+              59.3,
+              91.0
+            ],
+            [
+              116.9,
+              91.0
+            ],
+            [
+              116.9,
+              128.3
+            ],
+            [
+              59.3,
+              128.3
+            ]
+          ],
+          "sizeM": [
+            1.9,
+            0.85,
+            0.8
+          ]
+        },
+        {
+          "id": "o2",
+          "label": "テーブル",
+          "shapeMm": [
+            [
+              126.1,
+              106.7
+            ],
+            [
+              171.0,
+              106.7
+            ],
+            [
+              171.0,
+              133.2
+            ],
+            [
+              126.1,
+              133.2
+            ]
+          ],
+          "sizeM": [
+            1.0,
+            0.6,
+            0.42
+          ]
+        },
+        {
+          "id": "o3",
+          "label": "本棚",
+          "shapeMm": [
+            [
+              157.5,
+              63.4
+            ],
+            [
+              182.7,
+              63.4
+            ],
+            [
+              182.7,
+              113.1
+            ],
+            [
+              157.5,
+              113.1
+            ]
+          ],
+          "sizeM": [
+            0.9,
+            0.35,
+            1.8
+          ]
+        }
+      ],
+      "stage": "develop",
+      "look": {
+        "setting": "indoor",
+        "timeOfDay": "afternoon",
+        "weather": "clear",
+        "light": {
+          "key": "window"
+        },
+        "materials": [
+          {
+            "target": "o1",
+            "material": "布"
+          },
+          {
+            "target": "o2",
+            "material": "木"
+          },
+          {
+            "target": "o3",
+            "material": "木"
+          },
+          {
+            "target": "ground",
+            "material": "木"
+          },
+          {
+            "target": "walls",
+            "material": "白壁"
+          }
+        ]
+      }
+    }
+  ]
+}

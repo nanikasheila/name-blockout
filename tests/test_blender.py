@@ -178,3 +178,26 @@ def test_develop_under_a_ceiling_light(tmp_path):
     assert r["pass"] and light["pass"], light
     assert light["shadowSide"][1] == 0 and light["sunnySide"][1] == 0 and light["faces"]["sunny"][1] >= 20, light
     assert "天井の明かり" in r["note"]
+
+
+@needs_blender
+def test_develop_a_room_with_a_window(tmp_path):
+    """Indoors: the room's walls, ceiling and window drawn round the things, lit through the window; the check passes
+    (the walls cast no shadow, and the check looks through them the same way)."""
+    import bpy
+    import numpy as np
+
+    from name_blockout.pipeline import run_blockout
+
+    shutil.copy(ROOT / "examples" / "indoor" / "指示.json", tmp_path / "指示.json")
+    r = run_blockout(tmp_path / "指示.json", preview_dpi=60, log=lambda *_: None, develop=True)[0]
+    check = json.loads(Path(r["check"]).read_text(encoding="utf-8"))
+    light = next(c for c in check["checks"] if c["name"] == "影の向き")
+    assert r["pass"] and light["pass"], r["note"]
+    assert light["faces"]["shadow"][1] >= 50 and light["faces"]["sunny"][1] >= 50, light
+    assert "明かりは窓から" in r["note"] and "room.windows" in r["note"]
+    image = bpy.data.images.load(str(tmp_path / "案" / "panel1" / "1" / "線画.png"))
+    w, h = image.size
+    lines = np.array(image.pixels[:], dtype=np.float32).reshape(h, w, 4)[::-1]
+    # The ceiling's corners are drawn high in the picture (above everything standing in the room).
+    assert (lines[: h * 3 // 10, :, 3] > 0.5).sum() > w // 2

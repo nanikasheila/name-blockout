@@ -289,6 +289,35 @@
             "additionalProperties": false
           }
         },
+        "room": {
+          "description": "屋内の部屋（床・四方の壁・天井、窓）。屋内（look.setting が indoor か、言葉から屋内）なら道具が作る。カメラと物を囲む大きさで、壁はカメラから見て back（奥）・left・right・front（手前）。false で作らない（場所の素材を使うときも作らない）。",
+          "oneOf": [
+            { "const": false },
+            {
+              "type": "object",
+              "properties": {
+                "heightM": { "description": "天井の高さ（既定 2.4m。カメラか物が届くなら上げる）。", "type": "number", "minimum": 1.8, "maximum": 10 },
+                "windows": {
+                  "description": "窓。なければ、光が窓から（look.light.key window）のとき画面の左に見える壁に 1 つ。[] で窓なし。",
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": ["wall"],
+                    "properties": {
+                      "wall": { "enum": ["back", "left", "right", "front"] },
+                      "widthM": { "description": "幅（既定 1.7m）。", "type": "number", "exclusiveMinimum": 0 },
+                      "heightM": { "description": "高さ（既定 1.1m）。", "type": "number", "exclusiveMinimum": 0 },
+                      "sillM": { "description": "床から窓の下までの高さ（既定 0.9m。掃き出し窓なら 0）。", "type": "number", "minimum": 0 },
+                      "offsetM": { "description": "壁の真ん中からのずれ（部屋の中から壁に向いて右が +）。", "type": "number" }
+                    },
+                    "additionalProperties": false
+                  }
+                }
+              },
+              "additionalProperties": false
+            }
+          ]
+        },
         "look": {
           "description": "開発フェイズの見た目（場所・時間帯・光・質感）。設計（Blockout）では使わない。言葉で選び、数値には道具が直す。",
           "type": "object",
@@ -325,7 +354,7 @@
                 "type": "object",
                 "required": ["target", "material"],
                 "properties": {
-                  "target": { "description": "物の id か、素材の中の部分の名前。", "type": "string" },
+                  "target": { "description": "物の id、地面（床）は ground、部屋の壁と天井は walls、か素材の中の部分の名前。", "type": "string" },
                   "material": { "type": "string" }
                 },
                 "additionalProperties": false
