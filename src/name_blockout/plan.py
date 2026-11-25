@@ -356,6 +356,11 @@ def build_develop_plan(data: dict, shot: dict, instruction_path: str | Path | No
     light, light_assumed = lighting(shot.get("look"), camera["headingDeg"], setting)
     materials, material_assumed = assign(shot, setting, room=bool(plan.get("room")))
     plan["develop"] = {"lighting": light, "materials": materials}
+    # The development draws each thing as its 素材 where it has one (the Blockout keeps the boxes).
+    plan["detail"] = True
+    swapped = [f"{o['label']}（{o['asset']['name']}）" for o in plan["objects"] if o.get("asset")]
+    if swapped:
+        plan["notes"].append("素材に差し替え: " + "・".join(swapped))
     plan["assumptions"] += ([setting_assumed] if setting_assumed else []) + light_assumed + material_assumed
     passes = ["完成", "線画", "トーン", "影"] + (["遠景"] if "遠景" in plan["render"]["passes"] else [])
     plan["render"]["passes"] = passes

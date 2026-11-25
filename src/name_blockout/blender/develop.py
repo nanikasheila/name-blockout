@@ -180,8 +180,11 @@ def _set_materials(built: dict, plan: dict, which: str, ground) -> None:
             continue
         mat = _emission(f"dev_{ident.replace(':', '_')}_{which}", grey(m))
         for obj in objs:
+            # A part of a 素材 the author gave its own material (look.materials by the part's name).
+            part = materials.get(_part_name(obj.get("nb_part", "")))
+            own = _emission(f"dev_part_{_part_name(obj['nb_part'])}_{which}", grey(part)) if part and part.get("part") else None
             obj.data.materials.clear()
-            obj.data.materials.append(mat)
+            obj.data.materials.append(own or mat)
     walls = materials.get("walls")
     if walls:
         mat = _emission(f"dev_walls_{which}", grey(walls))
@@ -298,6 +301,12 @@ def _blocked(scene, depsgraph, start: Vector, ray: Vector) -> bool:
             return True
         start = location + ray * 1e-3
     return True
+
+
+def _part_name(name: str) -> str:
+    """A part's name as the 素材 has it (without the .001 Blender adds when the same name is appended twice)."""
+    head, dot, tail = name.rpartition(".")
+    return head if dot and tail.isdigit() else name
 
 
 def _skipped(why: str) -> dict:
