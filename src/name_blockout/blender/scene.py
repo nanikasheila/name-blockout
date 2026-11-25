@@ -8,11 +8,14 @@ for things, posts, and simple figures. Nothing is decided here.
 
 from __future__ import annotations
 
+import math
 from pathlib import Path
 
 import bmesh
 import bpy
 from mathutils import Matrix, Vector
+
+from ..far import BANDS, TONE_LIFT
 
 PREFIX = "NB_"
 #: Which light the tones take (from above, in front, a little left of the camera's usual view).
@@ -53,8 +56,13 @@ def set_camera(plan: dict):
     return cam
 
 
-def tone_material(name: str, base: float = 0.0, flat: float | None = None):
-    """Grey by which way a face looks (three steps), as light from LIGHT; `flat` for one grey."""
+def band_collection(band: str):
+    """Where the things of a distance band go (one Freestyle line set each: their lines get thinner with distance)."""
+    return collection("band_" + band)
+
+
+def tone_material(name: str, base: float = 0.0, flat: float | None = None, lift: float = 0.0):
+    """Grey by which way a face looks (three steps), as light from LIGHT; `flat` for one grey; `lift`: lighter (farther)."""
     mat = bpy.data.materials.get(PREFIX + name)
     if mat:
         return mat
@@ -75,10 +83,11 @@ def tone_material(name: str, base: float = 0.0, flat: float | None = None):
     ramp = nodes.new("ShaderNodeValToRGB")
     ramp.color_ramp.interpolation = "CONSTANT"
     els = ramp.color_ramp.elements
-    els[0].position, els[0].color = 0.0, (0.58 + base, 0.58 + base, 0.58 + base, 1)
-    els[1].position, els[1].color = 0.55, (0.78 + base, 0.78 + base, 0.78 + base, 1)
+    steps = [min(0.97, v + lift) for v in (0.58 + base, 0.78 + base, 0.93)]
+    els[0].position, els[0].color = 0.0, (steps[0], steps[0], steps[0], 1)
+    els[1].position, els[1].color = 0.55, (steps[1], steps[1], steps[1], 1)
     third = els.new(0.8)
-    third.color = (0.93, 0.93, 0.93, 1)
+    third.color = (steps[2], steps[2], steps[2], 1)
     mapr = nodes.new("ShaderNodeMapRange")
     mapr.inputs["From Min"].default_value = -1.0
     mapr.inputs["From Max"].default_value = 1.0
@@ -168,6 +177,87 @@ def add_figure(name: str, centre, height: float, coll, material):
     return _mesh_object(name, bm, coll, material)
 
 
+def add_skyline(layer: dict, coll, material):
+    for i, b in enumerate(layer["boxes"]):
+        add_box(f"{PREFIX}skyline_{i}", b["centreM"], b["sizeM"], "X", coll, material)
+
+
+def add_mountains(layer: dict, coll, material):
+    """The ridge as one strip from the ground up to it; only its outline is drawn (silhouette)."""
+    bm = bmesh.new()
+    top = [bm.verts.new(tuple(p)) for p in layer["ridge"]]
+    foot = [bm.verts.new((p[0], p[1], 0.0)) for p in layer["ridge"]]
+    for i in range(len(top) - 1):
+        bm.faces.new((foot[i], foot[i + 1], top[i + 1], top[i]))
+    return _mesh_object(PREFIX + "mountains", bm, coll, material)
+
+
+def add_trees(layer: dict, coll, material):
+    """Cones on a short trunk, all in one mesh."""
+    bm = bmesh.new()
+    for t in layer["trees"]:
+        h, r = t["heightM"], t["radiusM"]
+        trunk = h * 0.18
+        made = bmesh.ops.create_cone(bm, cap_ends=True, segments=8, radius1=r, radius2=0.0, depth=h - trunk)
+        x, y, z = t["centreM"]
+        bmesh.ops.translate(bm, vec=(x, y, z + trunk + (h - trunk) / 2), verts=made["verts"])
+        stem = bmesh.ops.create_cone(bm, cap_ends=True, segments=6, radius1=r * 0.12, radius2=r * 0.12, depth=trunk)
+        bmesh.ops.translate(bm, vec=(x, y, z + trunk / 2), verts=stem["verts"])
+    return _mesh_object(PREFIX + "trees", bm, coll, material)
+
+
+def panorama_world(layer: dict):
+    """The 360° image as the world, in greys (its horizon, at the image's middle row, is the camera's horizon), turned
+    by turnDeg (counter-clockwise from above). Bright skies are pressed under white (v / (1 + v) · 1.6)."""
+    world = bpy.data.worlds.new(PREFIX + "panorama")
+    world.use_nodes = True
+    nodes, links = world.node_tree.nodes, world.node_tree.links
+    bg = nodes.get("Background")
+    coord = nodes.new("ShaderNodeTexCoord")
+    mapping = nodes.new("ShaderNodeMapping")
+    mapping.inputs["Rotation"].default_value = (0.0, 0.0, -math.radians(layer.get("turnDeg", 0.0)))
+    tex = nodes.new("ShaderNodeTexEnvironment")
+    tex.image = bpy.data.images.load(layer["file"], check_existing=True)
+    tex.image.colorspace_settings.name = "Linear Rec.709" if layer["file"].lower().endswith((".hdr", ".exr")) else "sRGB"
+    grey = nodes.new("ShaderNodeRGBToBW")
+    add = nodes.new("ShaderNodeMath")
+    add.operation = "ADD"
+    add.inputs[1].default_value = 1.0
+    div = nodes.new("ShaderNodeMath")
+    div.operation = "DIVIDE"
+    mul = nodes.new("ShaderNodeMath")
+    mul.operation = "MULTIPLY"
+    mul.inputs[1].default_value = 1.6
+    links.new(coord.outputs["Generated"], mapping.inputs["Vector"])
+    links.new(mapping.outputs["Vector"], tex.inputs["Vector"])
+    links.new(tex.outputs["Color"], grey.inputs[0])
+    links.new(grey.outputs[0], add.inputs[0])
+    links.new(grey.outputs[0], div.inputs[0])
+    links.new(add.outputs[0], div.inputs[1])
+    links.new(div.outputs[0], mul.inputs[0])
+    links.new(mul.outputs[0], bg.inputs["Color"])
+    bg.inputs["Strength"].default_value = 1.0
+    return world
+
+
+def add_far(far: list[dict]) -> dict:
+    """The far layers: made things go with the far band (thin lines, light tones); a panorama becomes a world."""
+    coll = band_collection("far")
+    material = tone_material("far_layers", lift=TONE_LIFT["far"])
+    out = {"panorama": None}
+    for layer in far:
+        kind = layer["kind"]
+        if kind == "panorama":
+            out["panorama"] = panorama_world(layer)
+        elif kind == "skyline":
+            add_skyline(layer, coll, material)
+        elif kind == "mountains":
+            add_mountains(layer, coll, material)
+        elif kind == "trees":
+            add_trees(layer, coll, material)
+    return out
+
+
 def add_place(place: dict):
     """The place's collection from its .blend (appended, so the scene is whole on its own)."""
     path = Path(place["file"])
@@ -178,6 +268,8 @@ def add_place(place: dict):
         else:
             dst.objects = list(src.objects)
     coll = collection("place")
+    band_collection("near").children.link(coll)
+    bpy.context.scene.collection.children.unlink(coll)
     for c in getattr(dst, "collections", []) or []:
         if c is not None:
             coll.children.link(c)
@@ -198,25 +290,33 @@ def build(plan: dict) -> dict:
     bg = world.node_tree.nodes.get("Background")
     bg.inputs["Color"].default_value = (1, 1, 1, 1)
     scene.world = world
-    measured = {"objects": {}, "figures": {}, "edges": []}
+    measured = {"objects": {}, "figures": {}, "edges": [], "world": world, "panorama": None}
+    for band in BANDS:
+        band_collection(band)
     if plan.get("ground"):
         measured["edges"].append(add_ground(plan["ground"]))
     if plan.get("place"):
         coll = add_place(plan["place"])
         measured["edges"] += [o for o in coll.all_objects if o.type == "MESH"]
-    proxies = collection("proxies")
     for ref in plan.get("references", []):
-        measured["edges"].append(add_box(PREFIX + ref["id"], ref["centreM"], ref["sizeM"], "X", proxies, tone_material("proxy")))
+        posts = band_collection("near")
+        measured["edges"].append(add_box(PREFIX + ref["id"], ref["centreM"], ref["sizeM"], "X", posts, tone_material("proxy")))
     for obj in plan.get("objects", []):
         p = obj["placed"]
-        box = add_box(PREFIX + "obj_" + obj["id"], p["centreM"], p["sizeM"], p["along"], proxies, tone_material("proxy"))
+        band = obj.get("band", "near")
+        material = tone_material(f"proxy_{band}", lift=TONE_LIFT[band])
+        box = add_box(PREFIX + "obj_" + obj["id"], p["centreM"], p["sizeM"], p["along"], band_collection(band), material)
         box["nb_label"] = obj["label"]
+        box["nb_band"] = band
         measured["objects"][obj["id"]] = [box]
         measured["edges"].append(box)
-    figures = collection("figures")
     for fig in plan.get("figures", []):
         p = fig["placed"]
-        man = add_figure(PREFIX + "fig_" + fig["id"], p["centreM"], p["sizeM"][2], figures, tone_material("figure", base=-0.15))
+        band = fig.get("band", "near")
+        material = tone_material(f"figure_{band}", base=-0.15, lift=TONE_LIFT[band])
+        man = add_figure(PREFIX + "fig_" + fig["id"], p["centreM"], p["sizeM"][2], band_collection(band), material)
         measured["figures"][fig["id"]] = [man]
+    if plan.get("far"):
+        measured["panorama"] = add_far(plan["far"])["panorama"]
     bpy.context.view_layer.update()
     return measured

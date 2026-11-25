@@ -12,6 +12,8 @@ from pathlib import Path
 
 from .assets import Asset, object_asset, read_assets
 from .camera import AXES, DEFAULT_HEIGHT_M, Camera, CameraError, fit_camera
+from .far import BAND_LABELS, FAR_M, NEAR_M, band_of, far_layers, level_distance, panorama_width_needed, parallax_free_m
+from .imagesize import image_size
 from .instruction import Frame, frame_of
 from .scope import hashes, object_hashes
 from .sizes import usual_size
@@ -104,6 +106,7 @@ def build_plan(data: dict, shot: dict, instruction_path: str | Path | None = Non
 
     t = targets(shot, frame)
     vp_axes = vanishing_axes(camera, t.get("vanishingPx", []))
+    used: list[Asset] = [place_asset] if use_place else []
 
     objects = []
     for obj in shot.get("objects") or []:
@@ -118,8 +121,15 @@ def build_plan(data: dict, shot: dict, instruction_path: str | Path | None = Non
             camera, target, size=size, along=along, on_ground=obj.get("onGround", True), prior=None if size else usual_size(obj["label"])
         )
         entry = {"id": obj["id"], "label": obj["label"], "placed": placed.as_dict(), "fixedSize": bool(size)}
+        entry.update(_band(camera, obj, placed.centre, notes, obj["label"]))
+        if entry["distanceM"] > parallax_free_m(camera, camera.focal_px * render_frame.dpi / frame.dpi) and not obj.get("band"):
+            notes.append(
+                f"物「{obj['label']}」は {entry['distanceM']:.0f}m 先: カメラの高さを 1m 変えても下見で 1px も動かないので、遠景の層"
+                "（街並み・山並み・全天球の画像）でも足ります"
+            )
         if asset:
             entry["asset"] = _asset_entry(asset, assets_dir)
+            used.append(asset)
         objects.append(entry)
 
     figures = []
@@ -136,7 +146,28 @@ def build_plan(data: dict, shot: dict, instruction_path: str | Path | None = Non
                 }
             )
         placed = fit_figure(camera, target, height)
-        figures.append({"id": fig["id"], "name": fig.get("name", ""), "placed": placed.as_dict()})
+        figures.append(
+            {"id": fig["id"], "name": fig.get("name", ""), "placed": placed.as_dict(), **_band(camera, {}, placed.centre, notes, "")}
+        )
+
+    panoramas = {a.name: a for a in assets if a.kind == "panorama"}
+    far, far_notes = far_layers(camera, shot.get("far") or [], {n: _asset_entry(a, assets_dir) for n, a in panoramas.items()})
+    notes += far_notes
+    for layer in far:
+        if layer["kind"] != "panorama":
+            continue
+        used.append(panoramas[layer["name"]])
+        size = image_size(layer["file"])
+        if size:
+            for dpi_name, dpi_value in (("下見", render_frame.dpi), ("本番", frame.dpi)):
+                need = panorama_width_needed(camera.focal_px * dpi_value / frame.dpi)
+                if size[0] < need:
+                    notes.append(
+                        f"全天球の画像「{layer['name']}」は幅 {size[0]}px: {dpi_name}（{dpi_value:g}dpi）には {need}px 要るので粗く見えます"
+                    )
+                    break
+    passes = ["完成", "線画", "トーン"] + (["遠景"] if far or any(o["band"] == "far" for o in objects) else [])
+    passes = list((shot.get("render") or {}).get("passes") or passes)
 
     plan = {
         "format": PLAN_FORMAT,
@@ -144,7 +175,11 @@ def build_plan(data: dict, shot: dict, instruction_path: str | Path | None = Non
         "shot": shot["id"],
         "label": shot.get("label", shot["id"]),
         "frame": {"boxMm": list(frame.box), "dpi": frame.dpi, "sizePx": [frame.width, frame.height]},
-        "render": {"dpi": render_frame.dpi, "sizePx": [render_frame.width, render_frame.height], "passes": ["完成", "線画", "トーン"]},
+        "render": {
+            "dpi": render_frame.dpi,
+            "sizePx": [render_frame.width, render_frame.height],
+            "passes": [p for p in passes if p != "影"],
+        },
         "camera": {
             **camera.summary(),
             "sensorMm": 36.0,
@@ -156,6 +191,8 @@ def build_plan(data: dict, shot: dict, instruction_path: str | Path | None = Non
         "references": _references(camera) if (camera.points >= 3 and not objects and not use_place) else [],
         "objects": objects,
         "figures": figures,
+        "far": far,
+        "credits": _credits(used),
         "targets": t,
         "hashes": {**hashes(shot), "objects": object_hashes(shot)},
         "assumptions": assumptions,
@@ -167,6 +204,40 @@ def build_plan(data: dict, shot: dict, instruction_path: str | Path | None = Non
 def _asset_entry(asset: Asset, folder: Path | None) -> dict:
     path = (folder / asset.file) if folder else Path(asset.file)
     return {"name": asset.name, "kind": asset.kind, "file": str(path), "collection": asset.collection or asset.name}
+
+
+def _band(camera: Camera, item: dict, centre, notes: list[str], label: str) -> dict:
+    """The distance band of a thing as placed (or as the instruction says; a far cry from where it stands is noted)."""
+    distance = level_distance(camera, centre)
+    measured = band_of(distance)
+    band = item.get("band") or measured
+    if (
+        label
+        and item.get("band")
+        and ((band == "near" and distance > FAR_M) or (band == "far" and distance < NEAR_M) or (band == "middle" and distance < NEAR_M / 3))
+    ):
+        notes.append(f"物「{label}」は{BAND_LABELS[band]}と指示されていますが、組むと {distance:.0f}m 先（{BAND_LABELS[measured]}）です")
+    return {"band": band, "distanceM": round(distance, 2)}
+
+
+def _credits(used: list[Asset]) -> list[dict]:
+    """The 素材 a take is made with, once each: their licenses, and the line to credit them with where one is asked."""
+    out, seen = [], set()
+    for asset in used:
+        if asset is None or asset.name in seen:
+            continue
+        seen.add(asset.name)
+        out.append(
+            {
+                "name": asset.name,
+                "license": asset.license or "own",
+                **({"source": asset.source} if asset.source else {}),
+                **({"author": asset.author} if asset.author else {}),
+                "needsCredit": asset.needs_credit,
+                **({"credit": asset.credit()} if asset.needs_credit else {}),
+            }
+        )
+    return out
 
 
 def _camera_from_words(shot: dict, frame: Frame) -> Camera:
@@ -211,9 +282,11 @@ def _ground(camera: Camera, render_scale: float, placed: list[dict]) -> dict:
     while True:
         # Lines `spacing` apart at distance D are about focal·h·spacing/D² rows apart: end the ring where that is 5 px.
         extent = max(8 * spacing, math.sqrt(focal * h * spacing / 5.0))
-        extent = min(2000.0, math.ceil(extent / spacing) * spacing)
+        # A whole number of the next ring's cells, so its cells meet this ring's edge (no faces overlap).
+        step = 4 * spacing
+        extent = min(2000.0, math.ceil(extent / step) * step)
         if extent <= inner:
-            extent = inner + 4 * spacing
+            extent = inner + step
         rings.append({"spacingM": spacing, "extentM": extent})
         inner = extent
         if extent >= min(2000.0, reach + spacing) or len(rings) >= 4:

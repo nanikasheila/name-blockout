@@ -1,0 +1,30 @@
+{
+ "$schema": "../../schema/v1/instruction.schema.json",
+ "format": "name-blockout/instruction",
+ "formatVersion": 1,
+ "createdBy": {"app": "hand", "version": "0"},
+ "request": {"id": "example-far", "note": "例: 近景・中景・遠景のある川べり"},
+ "work": {"title": "例", "paperMm": [257, 364], "binding": "right"},
+ "shots": [
+  {
+   "id": "panel1",
+   "label": "p1 コマ1",
+   "page": 1,
+   "order": 1,
+   "frame": {"boxMm": [17, 17, 240, 137], "dpi": 600, "shapeMm": [[20, 20], [237, 20], [237, 134], [20, 134]]},
+   "intent": {"brief": "川べり。手前に小屋、中ほどに倉庫、向こうに街と山", "camera": "eye"},
+   "ruler": {"points": 2, "horizonMm": [[20, 96], [237, 96]], "vanishingMm": [[-120, 96], [420, 96]]},
+   "camera": {"heightM": 1.5},
+   "objects": [
+    {"id": "o1", "label": "小屋", "shapeMm": [[24, 60], [92, 60], [92, 128], [24, 128]]},
+    {"id": "o2", "label": "倉庫", "shapeMm": [[150, 84], [205, 84], [205, 99], [150, 99]], "axis": 2}
+   ],
+   "figures": [{"id": "f1", "name": "人", "heightM": 1.6, "shapeMm": [[108, 94], [120, 94], [120, 126], [108, 126]]}],
+   "far": [
+    {"kind": "mountains", "seed": 3},
+    {"kind": "skyline", "seed": 5, "distanceM": 900, "heightM": [12, 70]},
+    {"kind": "trees", "seed": 8, "distanceM": 180}
+   ]
+  }
+ ]
+}

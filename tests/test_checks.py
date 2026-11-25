@@ -103,3 +103,32 @@ def test_questions_skip_what_was_answered():
     del data["shots"][0]["camera"]
     findings = check_instruction(data)
     assert pick_questions(findings, 2, answered={"panel1:camera.heightM"}) == []
+
+
+def with_assets(tmp_path, data, assets):
+    folder = tmp_path / "素材"
+    folder.mkdir()
+    (folder / "素材.json").write_text(json.dumps({"assets": assets}, ensure_ascii=False), encoding="utf-8")
+    data["folders"] = {"assets": str(folder)}
+    return folder
+
+
+def test_asset_license_not_allowed_is_told(tmp_path):
+    data = example()
+    with_assets(tmp_path, data, [{"name": "倉庫", "file": "w.blend", "license": "CC-BY-NC-4.0"}, {"name": "小屋", "file": "h.blend"}])
+    found = {f["code"]: f for f in check_instruction(data)}
+    assert "asset.license" in found and "CC-BY-NC-4.0" in found["asset.license"]["message"]
+    assert "object.asset" not in found  # not "missing": named, but not used
+    assert found["asset.license-unknown"]["path"] == "objects/1/asset"
+
+
+def test_panorama_checks(tmp_path):
+    data = example()
+    folder = with_assets(tmp_path, data, [{"name": "空", "kind": "panorama", "file": "sky.hdr", "license": "CC0-1.0"}])
+    (folder / "sky.hdr").write_bytes(b"#?RADIANCE\nFORMAT=32-bit_rle_rgbe\n\n-Y 512 +X 1024\n")
+    data["shots"][0]["far"] = [{"kind": "panorama", "asset": "空"}]
+    found = {f["code"]: f for f in check_instruction(data)}
+    assert found["far.resolution"]["level"] == "warn" and "1024px" in found["far.resolution"]["message"]
+    data["shots"][0]["far"] = [{"kind": "panorama", "asset": "ない"}]
+    found = {f["code"]: f for f in check_instruction(data)}
+    assert found["far.asset"]["question"]["options"][0]["set"] == {"far/0/asset": "空"}

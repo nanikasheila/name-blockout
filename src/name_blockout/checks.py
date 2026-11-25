@@ -14,8 +14,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from .assets import object_asset, read_assets
+from .assets import allowed_licenses, license_problem, object_asset, read_assets
 from .camera import DEFAULT_HEIGHT_M, CameraError, fit_camera, hint_differences
+from .far import panorama_width_needed
+from .imagesize import image_size
 from .instruction import frame_of, pixels
 from .plan import folder_of, instruction_dir, targets, vanishing_axes
 from .sizes import usual_size
@@ -250,13 +252,18 @@ def check_shot(data: dict, shot: dict, base: Path | None = None) -> list[dict]:
     # --- things -----------------------------------------------------------------------------
     box = (0.0, 0.0, frame.width, frame.height)
     assets_dir = folder_of(data, "assets", base)
-    assets, asset_problems = read_assets(assets_dir) if assets_dir else ([], [])
+    # All of them (also those whose license is not allowed: a shot naming one is told so, not that it is missing).
+    assets, asset_problems = read_assets(assets_dir, usable_only=False) if assets_dir else ([], [])
+    allowed = allowed_licenses(assets_dir) if assets_dir else frozenset()
     for problem in asset_problems:
         out.append(finding("assets.read", "warn", shot, "folders.assets", problem))
+    named_assets = []
     for i, obj in enumerate(shot.get("objects") or []):
         region = frame.px_box(obj["shapeMm"])
         if box_iou(region, box) == 0:
             out.append(finding("object.outside", "warn", shot, f"objects/{i}", f"物「{obj['label']}」の範囲がコマの絵の外です"))
+        if assets_dir and object_asset(obj, assets):
+            named_assets.append((f"objects/{i}/asset", object_asset(obj, assets)))
         if obj.get("asset") and assets_dir and not object_asset(obj, assets):
             out.append(
                 finding(
@@ -293,7 +300,10 @@ def check_shot(data: dict, shot: dict, base: Path | None = None) -> list[dict]:
     # --- the place --------------------------------------------------------------------------
     place = shot.get("place") or {}
     if place.get("asset"):
-        if assets_dir and not any(a.kind == "place" and a.name == place["asset"] for a in assets):
+        found = next((a for a in assets if a.kind == "place" and a.name == place["asset"]), None)
+        if found:
+            named_assets.append(("place.asset", found))
+        if assets_dir and not found:
             out.append(finding("place.asset", "error", shot, "place.asset", f"場所「{place['asset']}」が素材.json にありません"))
         elif not cam_cfg.get("positionM"):
             out.append(
@@ -321,6 +331,78 @@ def check_shot(data: dict, shot: dict, base: Path | None = None) -> list[dict]:
                 else None,
             )
         )
+
+    # --- the far layers ---------------------------------------------------------------------
+    for i, layer in enumerate(shot.get("far") or []):
+        if layer.get("kind") != "panorama":
+            continue
+        found = next((a for a in assets if a.name == (layer.get("asset") or "")), None)
+        if not layer.get("asset") or (assets_dir and not found):
+            panoramas = [a.name for a in assets if a.kind == "panorama" and not license_problem(a, allowed)]
+            out.append(
+                finding(
+                    "far.asset",
+                    "warn",
+                    shot,
+                    f"far/{i}/asset",
+                    f"遠景の全天球の画像「{layer.get('asset', '')}」が素材.json にありません（画像なしで組みます）",
+                    question(
+                        "遠景をどうしますか？",
+                        [(name, {f"far/{i}/asset": name}) for name in panoramas[:3]] + [("全天球の画像なし（白い空のまま）", None)],
+                        0,
+                    )
+                    if panoramas
+                    else None,
+                )
+            )
+            continue
+        if found is None:
+            continue
+        if found.kind != "panorama":
+            out.append(
+                finding(
+                    "far.asset",
+                    "warn",
+                    shot,
+                    f"far/{i}/asset",
+                    f"素材「{found.name}」は全天球の画像（kind panorama）ではありません（画像なしで組みます）",
+                )
+            )
+            continue
+        named_assets.append((f"far/{i}/asset", found))
+        size = image_size(Path(assets_dir) / found.file) if assets_dir else None
+        if size and camera:
+            preview = float((shot.get("render") or {}).get("previewDpi") or 150.0)
+            for name, dpi, level in (("下見", min(preview, frame.dpi), "warn"), ("本番", frame.dpi, "info")):
+                need = panorama_width_needed(camera.focal_px * dpi / frame.dpi)
+                if size[0] < need:
+                    out.append(
+                        finding(
+                            "far.resolution",
+                            level,
+                            shot,
+                            f"far/{i}/asset",
+                            f"全天球の画像「{found.name}」は幅 {size[0]}px です。{name}（{dpi:g}dpi）でこのレンズなら幅 {need}px 要るので、遠景が粗く見えます",
+                        )
+                    )
+                    break
+
+    # --- the licenses of the 素材 this shot uses ------------------------------------------------
+    for path, asset in named_assets:
+        problem = license_problem(asset, allowed)
+        if problem:
+            out.append(finding("asset.license", "warn", shot, path, problem + "。代わりに箱（遠景なら画像なし）で組みます"))
+        elif asset.license is None and (asset.by or "").upper() != "AI":
+            out.append(
+                finding(
+                    "asset.license-unknown",
+                    "info",
+                    shot,
+                    path,
+                    f"素材「{asset.name}」のライセンスが書かれていません。自分で作ったものとして使います"
+                    "（配布されている素材なら、素材.json に license と source を）",
+                )
+            )
 
     # --- the look (development) ---------------------------------------------------------------
     if shot.get("stage") == "develop":

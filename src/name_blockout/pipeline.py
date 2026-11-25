@@ -101,7 +101,7 @@ def run_blockout(
         write_json(work / "check.json", result)
         files = {}
         if render:
-            rendered = brender.render_passes(plan, work / "render")
+            rendered = brender.render_passes(plan, work / "render", passes=plan["render"]["passes"])
             takes_dir.mkdir(parents=True, exist_ok=True)
             for name, path in rendered.items():
                 shutil.copyfile(path, takes_dir / f"{name}.png")
@@ -109,6 +109,13 @@ def run_blockout(
         bpy.ops.wm.save_as_mainfile(filepath=str(work / "scene.blend"), compress=True)
         assumed = "・".join(f"{a['path']}={a['value']}" for a in plan["assumptions"])
         note = f"Blockout（箱のあたり、name-blockout）。{summary_words(result)}" + (f"。仮: {assumed}" if assumed else "")
+        credits = [c["credit"] for c in plan.get("credits", []) if c.get("needsCredit")]
+        if credits:
+            note += "。クレジット: " + " / ".join(credits)
+        if plan.get("credits"):
+            write_json(work / "credits.json", plan["credits"])
+            if render:
+                write_json(takes_dir / "credits.json", plan["credits"])
         if files:
             add_take(
                 folder,
