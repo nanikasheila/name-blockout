@@ -19,7 +19,7 @@ from __future__ import annotations
 import hashlib
 import json
 
-DESIGN_FIELDS = ("frame", "ruler", "camera", "place", "objects", "figures")
+DESIGN_FIELDS = ("frame", "ruler", "camera", "place", "objects", "figures", "far")
 DESIGN_INTENT = ("none", "brief", "camera")
 DEVELOP_FIELDS = ("look", "render", "stage")
 

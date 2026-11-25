@@ -39,6 +39,8 @@ def test_ground_reaches_the_farthest_thing():
     rings = p["ground"]["rings"]
     assert rings[-1]["extentM"] >= reach
     assert all(b["spacingM"] == 4 * a["spacingM"] for a, b in zip(rings, rings[1:]))
+    # Each ring ends on the next ring's cells, so no faces overlap (Freestyle warns of edges twice).
+    assert all(abs(a["extentM"] / b["spacingM"] - round(a["extentM"] / b["spacingM"])) < 1e-9 for a, b in zip(rings, rings[1:]))
 
 
 def test_plan_is_json_and_deterministic():

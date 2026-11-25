@@ -37,6 +37,14 @@ def test_moving_a_thing_redoes_design_and_keeps_the_others():
     assert scope["objects"]["changed"] == ["o2"] and set(scope["objects"]["kept"]) == {"o1", "f1"}
 
 
+def test_far_layers_redo_design():
+    a = shot()
+    b = copy.deepcopy(a)
+    b["far"] = [{"kind": "mountains", "seed": 2}]
+    scope = redo_scope(a, b)
+    assert scope["redo"] == "design" and "far" in scope["changed"]
+
+
 def test_notes_and_hint_redo_nothing():
     a = shot()
     b = copy.deepcopy(a)

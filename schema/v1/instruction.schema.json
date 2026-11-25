@@ -233,7 +233,11 @@
               "axis": { "description": "物の辺が向かう消失点（1 か 2）。なければ場の線と同じ（1）。", "enum": [1, 2] },
               "facing": { "description": "向きの言葉（横向き・正面・斜め・ドアをこちら に など）。", "type": "string" },
               "show": { "description": "見せたい面（開いたドア・正面の看板 など）。", "type": "string" },
-              "onGround": { "description": "地面に置く（既定）。false なら宙（看板・照明）。", "type": "boolean" }
+              "onGround": { "description": "地面に置く（既定）。false なら宙（看板・照明）。", "type": "boolean" },
+              "band": {
+                "description": "距離帯: near（近景）・middle（中景）・far（遠景）。なければ組んだ距離から道具が決める。線の太さ・トーンの濃さ・遠景の層に使う。",
+                "enum": ["near", "middle", "far"]
+              }
             },
             "additionalProperties": false
           }
@@ -252,6 +256,30 @@
               "pose": { "enum": ["stand", "sit", "crouch", "lie"] },
               "facing": { "type": "string" },
               "cut": { "description": "コマで切れていて足が見えない（足の位置からは測れない）。", "type": "boolean" }
+            },
+            "additionalProperties": false
+          }
+        },
+        "far": {
+          "description": "遠景の層（奥から）。全天球の画像（素材の panorama）か、道具が作る街並み・山並み・木立。カメラの高さが変わってもほとんど動かない距離のもの。",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["kind"],
+            "properties": {
+              "kind": { "enum": ["panorama", "skyline", "mountains", "trees"] },
+              "asset": { "description": "panorama: 素材.json の全天球の画像（kind panorama）の名前。", "type": "string" },
+              "turnDeg": { "description": "上から見て左回りに回す角度（panorama の向き・太陽に合わせる）。", "type": "number" },
+              "distanceM": { "description": "カメラからの距離（既定: 街並み 800m・山並み 6000m・木立 150m）。", "type": "number", "exclusiveMinimum": 0 },
+              "heightM": {
+                "description": "高さの幅 [低い, 高い]（既定: 街並み 15〜90m・山並み 200〜900m・木立 6〜18m）。",
+                "type": "array",
+                "items": { "type": "number", "minimum": 0 },
+                "minItems": 2,
+                "maxItems": 2
+              },
+              "seed": { "description": "形を決める種（同じ種なら同じ形）。", "type": "integer", "minimum": 0 },
+              "note": { "type": "string" }
             },
             "additionalProperties": false
           }
@@ -302,7 +330,7 @@
           "description": "描き出し方。",
           "type": "object",
           "properties": {
-            "passes": { "type": "array", "items": { "enum": ["完成", "線画", "トーン", "影"] }, "uniqueItems": true },
+            "passes": { "type": "array", "items": { "enum": ["完成", "線画", "トーン", "遠景", "影"] }, "uniqueItems": true },
             "previewDpi": { "description": "下見の解像度（設計の案はこれで描く）。", "type": "number", "exclusiveMinimum": 0 }
           },
           "additionalProperties": false
