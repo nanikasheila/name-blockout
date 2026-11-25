@@ -201,3 +201,72 @@ def test_develop_a_room_with_a_window(tmp_path):
     lines = np.array(image.pixels[:], dtype=np.float32).reshape(h, w, 4)[::-1]
     # The ceiling's corners are drawn high in the picture (above everything standing in the room).
     assert (lines[: h * 3 // 10, :, 3] > 0.5).sum() > w // 2
+
+
+def _chair_blend(folder: Path) -> None:
+    """A 素材 made here: a chair (seat, back, four legs) in a collection 椅子, its front toward −Y."""
+    import bpy
+
+    bpy.ops.wm.read_factory_settings(use_empty=True)
+    coll = bpy.data.collections.new("椅子")
+    bpy.context.scene.collection.children.link(coll)
+    parts = {
+        "座面": ((0, 0, 0.45), (0.45, 0.45, 0.05)),
+        "背もたれ": ((0, 0.2, 0.75), (0.45, 0.05, 0.55)),
+        **{f"脚{i}": ((x, y, 0.21), (0.04, 0.04, 0.42)) for i, (x, y) in enumerate(((-0.2, -0.2), (0.2, -0.2), (-0.2, 0.2), (0.2, 0.2)))},
+    }
+    for name, (centre, size) in parts.items():
+        mesh = bpy.data.meshes.new(name)
+        hx, hy, hz = (v / 2 for v in size)
+        verts = [(centre[0] + sx * hx, centre[1] + sy * hy, centre[2] + sz * hz) for sx in (-1, 1) for sy in (-1, 1) for sz in (-1, 1)]
+        faces = [(0, 1, 3, 2), (4, 6, 7, 5), (0, 4, 5, 1), (2, 3, 7, 6), (0, 2, 6, 4), (1, 5, 7, 3)]
+        mesh.from_pydata(verts, [], faces)
+        coll.objects.link(bpy.data.objects.new(name, mesh))
+    folder.mkdir(parents=True, exist_ok=True)
+    bpy.ops.wm.save_as_mainfile(filepath=str(folder / "chair.blend"))
+    (folder / "素材.json").write_text(
+        json.dumps({"assets": [{"name": "椅子", "kind": "thing", "file": "chair.blend", "license": "own"}]}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+
+@needs_blender
+def test_develop_draws_a_thing_as_its_asset(tmp_path):
+    """A thing with a 素材: the Blockout keeps its box, the development puts the 素材 in its place (turned to the
+    camera, fitted in the box), with a part given its own material; the checks still pass."""
+    import bpy
+    from mathutils import Vector
+
+    from name_blockout.pipeline import run_blockout
+
+    _chair_blend(tmp_path / "素材")
+    data = json.loads((ROOT / "examples" / "indoor" / "指示.json").read_text(encoding="utf-8"))
+    data["folders"] = {"assets": "素材"}
+    shot = data["shots"][0]
+    shot["objects"][1]["label"] = "椅子"
+    shot["objects"][1]["sizeM"] = [0.6, 0.6, 1.0]
+    shot["look"]["materials"].append({"target": "座面", "material": "黒い塗装"})
+    (tmp_path / "指示.json").write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+
+    blockout = run_blockout(tmp_path / "指示.json", preview_dpi=60, log=lambda *_: None)[0]
+    assert blockout["pass"], blockout["note"]
+    bpy.ops.wm.open_mainfile(filepath=str(tmp_path / "blockout" / "panel1" / "1" / "scene.blend"))
+    assert "NB_obj_o2" in bpy.data.objects and "NB_thing_o2" not in bpy.data.objects
+
+    r = run_blockout(tmp_path / "指示.json", preview_dpi=60, log=lambda *_: None, develop=True)[0]
+    assert r["pass"], r["note"]
+    plan = json.loads((tmp_path / "blockout" / "panel1" / "2" / "plan.json").read_text(encoding="utf-8"))
+    assert "素材に差し替え: 椅子（椅子）" in plan["notes"]
+    bpy.ops.wm.open_mainfile(filepath=str(tmp_path / "blockout" / "panel1" / "2" / "scene.blend"))
+    holder = bpy.data.objects["NB_thing_o2"]
+    seat = next(o for o in holder.children if o.name.startswith("座面"))
+    back = next(o for o in holder.children if o.name.startswith("背もたれ"))
+    # Fitted in the box (1.0 m high: the chair's 1.025 m scaled a little down), standing on the floor.
+    points = [o.matrix_world @ Vector(c) for o in holder.children for c in o.bound_box]
+    assert abs(min(p.z for p in points)) < 1e-3 and 0.9 < max(p.z for p in points) <= 1.0 + 1e-3
+    # Its front toward the camera: the back rest is farther from the camera than the seat's middle.
+    cam = Vector(plan["camera"]["positionM"])
+    seat_c = seat.matrix_world @ Vector((0, 0, 0.45))
+    back_c = back.matrix_world @ Vector((0, 0.2, 0.75))
+    assert (back_c.xy - cam.xy).length > (seat_c.xy - cam.xy).length
+    assert seat.data.materials[0].name.startswith("NB_dev_part_座面")

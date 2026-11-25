@@ -116,6 +116,11 @@ def assign(shot: dict, setting: str = "outdoor", room: bool = False) -> tuple[di
     targets = [(o["id"], o.get("label", "")) for o in shot.get("objects") or []] + [(GROUND, "床" if indoor else "地面")]
     if room:
         targets.append((WALLS, "壁"))
+    # Parts of a 素材 named by the author (a target that is no thing's id): as given, when the library has it.
+    ids = {ident for ident, _ in targets}
+    for target, name in given.items():
+        if target not in ids and name in LIBRARY:
+            out[target] = {**LIBRARY[name].as_dict(), "part": True}
     for ident, label in targets:
         name = given.get(ident)
         if name and name in LIBRARY:

@@ -386,6 +386,64 @@ def add_far(far: list[dict]) -> dict:
     return out
 
 
+def _append(path: Path, wanted: str):
+    """A .blend's collection `wanted` (else all its objects), appended: the objects, cameras and lights left out."""
+    with bpy.data.libraries.load(str(path), link=False) as (src, dst):
+        if wanted in src.collections:
+            dst.collections = [wanted]
+        else:
+            dst.objects = list(src.objects)
+    objects = []
+    for c in getattr(dst, "collections", []) or []:
+        if c is not None:
+            objects += list(c.all_objects)
+    objects += [o for o in getattr(dst, "objects", []) or [] if o is not None]
+    return [o for o in dict.fromkeys(objects) if o.type not in ("CAMERA", "LIGHT")]
+
+
+def add_thing(obj: dict, camera_at, coll):
+    """A thing's 素材 (a .blend) in place of its box: turned so its first side runs along the box's (and its front,
+    the 素材's −Y, toward the camera), scaled alike on all sides to fit in the box, standing on the box's bottom.
+    Returns its mesh parts (each named as in the 素材)."""
+    asset = obj["asset"]
+    parts = _append(Path(asset["file"]), asset.get("collection") or asset["name"])
+    meshes = [o for o in parts if o.type == "MESH"]
+    if not meshes:
+        return []
+    for o in parts:
+        coll.objects.link(o)
+    bpy.context.view_layer.update()
+    depsgraph = bpy.context.evaluated_depsgraph_get()
+    points = []
+    for o in meshes:
+        ev = o.evaluated_get(depsgraph)
+        points += [ev.matrix_world @ Vector(c) for c in ev.bound_box]
+    lo = Vector((min(p.x for p in points), min(p.y for p in points), min(p.z for p in points)))
+    hi = Vector((max(p.x for p in points), max(p.y for p in points), max(p.z for p in points)))
+    size = hi - lo
+    base = Vector(((lo.x + hi.x) / 2, (lo.y + hi.y) / 2, lo.z))
+    p = obj["placed"]
+    w, d, h = p["sizeM"]
+    turn = 0.0 if p["along"] == "X" else math.pi / 2
+    centre = Vector(p["centreM"])
+    front = Matrix.Rotation(turn, 3, "Z") @ Vector((0, -1, 0))
+    to_camera = Vector((camera_at[0] - centre.x, camera_at[1] - centre.y, 0.0))
+    if front.dot(to_camera) < 0:
+        turn += math.pi
+    k = min(w / max(size.x, 1e-6), d / max(size.y, 1e-6), h / max(size.z, 1e-6))
+    holder = bpy.data.objects.new(PREFIX + "thing_" + obj["id"], None)
+    coll.objects.link(holder)
+    holder.matrix_world = Matrix.Translation(centre) @ Matrix.Rotation(turn, 4, "Z") @ Matrix.Scale(k, 4) @ Matrix.Translation(-base)
+    for o in parts:
+        if o.parent is None:
+            o.parent = holder
+            o.matrix_parent_inverse = Matrix.Identity(4)
+    for o in meshes:
+        o["nb_label"] = obj["label"]
+        o["nb_part"] = o.name
+    return meshes
+
+
 def add_place(place: dict):
     """The place's collection from its .blend (appended, so the scene is whole on its own)."""
     path = Path(place["file"])
@@ -437,6 +495,15 @@ def build(plan: dict) -> dict:
         p = obj["placed"]
         band = obj.get("band", "near")
         material = tone_material(f"proxy_{band}", lift=TONE_LIFT[band])
+        if plan.get("detail") and obj.get("asset"):
+            parts = add_thing(obj, plan["camera"]["positionM"], band_collection(band))
+            if parts:
+                for part in parts:
+                    part["nb_band"] = band
+                    if not part.data.materials:
+                        part.data.materials.append(material)
+                measured["objects"][obj["id"]] = parts
+                continue
         box = add_box(PREFIX + "obj_" + obj["id"], p["centreM"], p["sizeM"], p["along"], band_collection(band), material)
         box["nb_label"] = obj["label"]
         box["nb_band"] = band
