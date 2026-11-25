@@ -19,6 +19,8 @@ from .camera import DEFAULT_HEIGHT_M, CameraError, fit_camera, hint_differences
 from .far import panorama_width_needed
 from .imagesize import image_size
 from .instruction import frame_of, pixels
+from .look import KEY_LABELS, PLACES, lighting, norths_for_key
+from .materials import DEFAULT, LIBRARY, guess
 from .plan import folder_of, instruction_dir, targets, vanishing_axes
 from .sizes import usual_size
 from .solve import DEFAULT_FIGURE_M, camera_height_from_figure, fit_box
@@ -429,6 +431,113 @@ def check_shot(data: dict, shot: dict, base: Path | None = None) -> list[dict]:
             )
         if not look.get("weather"):
             out.append(finding("look.weather", "info", shot, "look.weather", "天気が決まっていません。晴れで組みます"))
+        out += _look_findings(shot, look, camera)
+    return out
+
+
+SEASONS = [("春分（3月21日）", "03-21"), ("夏至（6月21日）", "06-21"), ("秋分（9月23日）", "09-23"), ("冬至（12月22日）", "12-22")]
+
+
+def _look_findings(shot: dict, look: dict, camera) -> list[dict]:
+    """The development's look: what the light still needs (place, date, north), whether the sun comes from the side
+    the author asked for, and the things without a material."""
+    out = []
+    word = look.get("timeOfDay")
+    if word and word != "night":
+        if not look.get("location"):
+            out.append(
+                finding(
+                    "look.location",
+                    "info",
+                    shot,
+                    "look.location",
+                    "場所（緯度・経度）が決まっていません。東京で太陽の位置を出します",
+                    question(
+                        "どこの太陽？",
+                        [(name, {"look.location": {"latDeg": lat, "lonDeg": lon}}) for name, (lat, lon) in PLACES.items()],
+                        0,
+                    ),
+                )
+            )
+        if not look.get("date"):
+            out.append(
+                finding(
+                    "look.date",
+                    "info",
+                    shot,
+                    "look.date",
+                    "日付（季節）が決まっていません。春分で太陽の高さを出します",
+                    question("季節は？", [(label, {"look.date": value}) for label, value in SEASONS], 0),
+                )
+            )
+    if camera is not None and (word or (look.get("light") or {}).get("key")):
+        light, _ = lighting(look, camera.heading_deg)
+        sun = light.get("sun")
+        key = (look.get("light") or {}).get("key")
+        if sun and word and key in KEY_LABELS and key != "top" and sun["strength"] and sun["side"] != key:
+            norths = norths_for_key(key, camera.heading_deg, sun["azimuthDeg"])
+            out.append(
+                finding(
+                    "look.key",
+                    "warn",
+                    shot,
+                    "look.north",
+                    f"光は「{KEY_LABELS[key]}」の指示ですが、この時間・場所の向きでは太陽は{KEY_LABELS[sun['side']]}です",
+                    question(
+                        "どちらに合わせますか？",
+                        [(f"北の向きを {n} に（太陽が{KEY_LABELS[key]}）", {"look.north": n}) for n in norths[:2]]
+                        + [(f"太陽のまま（{KEY_LABELS[sun['side']]}）", None)],
+                        0,
+                    ),
+                )
+            )
+        elif sun and word and not look.get("north") and sun["strength"]:
+            options = []
+            for side in ("side-right", "side-left", "back", "front"):
+                found = norths_for_key(side, camera.heading_deg, sun["azimuthDeg"])
+                if found and found[0] not in [o[1]["look.north"] for o in options]:
+                    options.append((f"日差しを{KEY_LABELS[side]}", {"look.north": found[0]}))
+            out.append(
+                finding(
+                    "look.north",
+                    "info",
+                    shot,
+                    "look.north",
+                    f"北の向きが決まっていません。+Y を北として、太陽は{KEY_LABELS[sun['side']]}です",
+                    question("日差しはどちらから？", options[:4], 0) if options else None,
+                )
+            )
+    given = {m["target"]: m["material"] for m in (look.get("materials") or [])}
+    for target, name in given.items():
+        if name not in LIBRARY:
+            out.append(
+                finding(
+                    "look.material-unknown",
+                    "warn",
+                    shot,
+                    f"look.materials/{target}",
+                    f"材質「{name}」はライブラリにありません（{'・'.join(LIBRARY)}）",
+                )
+            )
+    open_things = [o for o in shot.get("objects") or [] if o["id"] not in given]
+    if open_things:
+        first = open_things[0]
+        guessed = guess(first.get("label", "")) or DEFAULT
+        others = [n for n in ("コンクリート", "木", "金属", "白壁") if n != guessed][:2]
+        out.append(
+            finding(
+                "look.materials",
+                "info",
+                shot,
+                "look.materials",
+                "材質が決まっていない物: " + "・".join(f"{o['label']}（仮に{guess(o.get('label', '')) or DEFAULT}）" for o in open_things),
+                question(
+                    f"「{first['label']}」の材質は？",
+                    [(name, {f"look.materials/{first['id']}": name}) for name in [guessed, *others]],
+                    0,
+                ),
+            )
+        )
     return out
 
 

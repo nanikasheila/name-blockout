@@ -5,6 +5,7 @@
 - **要求開発** → **設計（Blockout）** → **開発（本番の作画）** の 3 フェイズ。ネームの案出しは設計まで、作画に移ると決めたコマだけ開発へ（[docs/phases.md](docs/phases.md)）。
 - コマに引いた透視の定規（アイレベル・消失点）から、カメラ（レンズ・シフト・見上げ/見下ろし・傾き）を計算で決めます。AI にカメラを合わせさせません。
 - 組んだシーンを Blender 自身の投影で測り、指示とのずれ（px・度・重なり）を出します。合った絵だけが案として name-studio に届きます。
+- 開発では、日付・時間帯・緯度経度から太陽を、天気から日差しを決め、材質ごとに光の面と影の面のトーン・ベタで描き出します。影が太陽と反対に落ちているかも確かめます。
 - 物は距離で近景・中景・遠景に分け、遠いほど線を細く・トーンを明るく。奥は全天球の画像（HDRI）や、種から作る街並み・山並み・木立で埋め、`遠景.png` として別に渡します。
 - 素材は無料で商用にも使えるものだけ。`素材.json` にライセンスと出どころを書き、使った素材は案ごとにクレジットを残します（[docs/assets.md](docs/assets.md)）。
 - 指示の形式（指示.json）は [docs/instruction-format.md](docs/instruction-format.md) とスキーマ [schema/v1](schema/v1/instruction.schema.json)。
@@ -24,6 +25,8 @@ name-blockout answer   依頼/20261126-0100/指示.json --shot panel12 --set cam
 name-blockout confirm  依頼/20261126-0100/指示.json --shot panel12
 name-blockout blockout 依頼/20261126-0100/指示.json   # 組んで照合して描き出す
 name-blockout scope    依頼/20261126-0100/指示.json --shot panel12   # 直したらどこからやり直すか
+name-blockout develop  依頼/20261126-0100/指示.json   # 開発: 同じ配置に光（時間帯・天気）と材質、影・トーン・ベタ
+name-blockout materials                               # 材質のライブラリ（3D と漫画での描き方の組）
 ```
 
 `blockout` は作業フォルダー（指示書のある `依頼/<id>/` の 2 つ上）に、name-studio がそのまま読める形で書きます。

@@ -93,3 +93,28 @@ def test_far_layers_and_panorama(tmp_path):
     edge = next(y for y in range(fh) if grey(2, y)[0] < (above + below) / 2)
     assert abs(edge - horizon) < 6, (edge, horizon)
     assert (tmp_path / "blockout" / "panel1" / "1" / "credits.json").exists()
+
+
+@needs_blender
+def test_develop_example(tmp_path):
+    """The development: the same layout, lit by the afternoon sun; shadows fall away from it, tones by material."""
+    import bpy
+
+    from name_blockout.pipeline import run_blockout
+
+    shutil.copy(ROOT / "examples" / "develop" / "指示.json", tmp_path / "指示.json")
+    reports = run_blockout(tmp_path / "指示.json", preview_dpi=60, log=lambda *_: None, develop=True)
+    r = reports[0]
+    check = json.loads(Path(r["check"]).read_text(encoding="utf-8"))
+    light = next(c for c in check["checks"] if c["name"] == "影の向き")
+    assert r["pass"] and light["pass"] and light["tested"] >= 2, light
+    assert set(r["files"]) == {"完成", "線画", "トーン", "影"}
+    assert r["note"].startswith("開発（光と材質、name-blockout）: 午後・晴れ・日差しは")
+    shade = bpy.data.images.load(str(tmp_path / "案" / "panel1" / "1" / "影.png"))
+    alpha = shade.pixels[3::4]
+    assert 0.02 < sum(1 for a in alpha if a > 0.1) / len(alpha) < 0.6
+    built = json.loads((tmp_path / "blockout" / "panel1" / "1" / "built.json").read_text(encoding="utf-8"))
+    assert built["mode"] == "develop"
+    # A Blockout of the same shot does not count as the development's last build.
+    again = run_blockout(tmp_path / "指示.json", preview_dpi=60, only_changed=True, log=lambda *_: None, develop=True)
+    assert again[0]["status"] == "unchanged"

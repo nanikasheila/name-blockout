@@ -9,6 +9,8 @@
   confirm   <指示.json> --shot ID           confirm the requirement (a new version when it changed)
   scope     <指示.json> --shot ID           what a rebuild would redo (design / develop / none)
   blockout  <指示.json> [--shot ID …]       build, check in numbers and draw the Blockout (needs Blender)
+  develop   <指示.json> [--shot ID …]       the development: the same layout with light and materials (needs Blender)
+  materials                               the material library (3D and how a manga draws it)
 
 Commands print JSON with --json; otherwise words for people.
 """
@@ -206,6 +208,7 @@ def cmd_blockout(a) -> int:
         only_changed=a.only_changed,
         render=not a.no_render,
         log=(lambda *_: None) if a.json else print,
+        develop=a.command == "develop",
     )
     if a.json:
         _print(reports, True)
@@ -245,16 +248,36 @@ def parser() -> argparse.ArgumentParser:
         if name == "answer":
             c.add_argument("--set", action="append", required=True, help="path=value（値は JSON か文字）")
             c.add_argument("--by", default="author", choices=["author", "ai", "tool"])
-    c = command("blockout", cmd_blockout, "Blockout を組んで照合し描き出す（Blender）")
-    c.add_argument("--shot", action="append", help="このコマだけ（何度でも）")
-    c.add_argument("--folder", help="作業フォルダー（既定: 指示書から）")
-    c.add_argument("--take", help="案の番号（既定: 次の番号）")
-    c.add_argument("--dpi", type=float, help="描き出す解像度（既定 150）")
-    c.add_argument("--force", action="store_true", help="点検のエラーがあっても組む")
-    c.add_argument("--only-changed", action="store_true", help="前に組んだときから設計が変わったコマだけ")
-    c.add_argument("--no-render", action="store_true", help="組んで照合するだけ（描き出さない）")
-    c.add_argument("--blender", help="Blender の場所")
+    for name, help_, dpi in (
+        ("blockout", "Blockout を組んで照合し描き出す（Blender）", "既定 150"),
+        ("develop", "開発: 同じ配置に光と材質（既定: stage が develop のコマ、Blender）", "既定 300、指示の dpi まで"),
+    ):
+        c = command(name, cmd_blockout, help_)
+        c.add_argument("--shot", action="append", help="このコマだけ（何度でも）")
+        c.add_argument("--folder", help="作業フォルダー（既定: 指示書から）")
+        c.add_argument("--take", help="案の番号（既定: 次の番号）")
+        c.add_argument("--dpi", type=float, help=f"描き出す解像度（{dpi}）")
+        c.add_argument("--force", action="store_true", help="点検のエラーがあっても組む")
+        c.add_argument("--only-changed", action="store_true", help="前に組んだときから変わったコマだけ")
+        c.add_argument("--no-render", action="store_true", help="組んで照合するだけ（描き出さない）")
+        c.add_argument("--blender", help="Blender の場所")
+    m = sub.add_parser("materials", help="材質のライブラリ（3D と漫画での描き方の組）")
+    m.add_argument("--json", action="store_true")
+    m.set_defaults(func=cmd_materials)
     return p
+
+
+def cmd_materials(a) -> int:
+    from .materials import LIBRARY
+
+    if a.json:
+        _print({name: m.as_dict() for name, m in LIBRARY.items()}, True)
+        return 0
+    for m in LIBRARY.values():
+        draw = "ベタ" if m.beta else f"トーン {m.tone * 100:.0f}%・影 {m.shadowTone * 100:.0f}%"
+        lines = "描き込む" if m.lines == "detail" else "輪郭だけ"
+        print(f"{m.name}: {draw}・線は{lines}" + (f"（{m.note}）" if m.note else ""))
+    return 0
 
 
 def main(argv: list[str] | None = None) -> int:

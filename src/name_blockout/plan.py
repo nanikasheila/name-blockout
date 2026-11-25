@@ -15,6 +15,8 @@ from .camera import AXES, DEFAULT_HEIGHT_M, Camera, CameraError, fit_camera
 from .far import BAND_LABELS, FAR_M, NEAR_M, band_of, far_layers, level_distance, panorama_width_needed, parallax_free_m
 from .imagesize import image_size
 from .instruction import Frame, frame_of
+from .look import lighting
+from .materials import assign
 from .scope import hashes, object_hashes
 from .sizes import usual_size
 from .solve import DEFAULT_FIGURE_M, fit_box, fit_figure
@@ -312,3 +314,21 @@ def _references(camera: Camera) -> list[dict]:
         y = camera.position[1] + level[1] * d + side[1] * across * max(1.0, h / 1.5)
         out.append({"id": f"post{k + 1}", "centreM": [x, y, 0.0], "sizeM": [0.6, 0.6, max(12.0, h * 4)]})
     return out
+
+
+DEVELOP_DPI = 300
+
+
+def build_develop_plan(data: dict, shot: dict, instruction_path: str | Path | None = None, dpi: float | None = None) -> dict:
+    """The development plan: the same camera and layout as the Blockout (the design does not move), with the light
+    (look.py) and each thing's material (materials.py) in numbers, drawn at `dpi` (default 300, at most the frame's)."""
+    frame = frame_of(shot["frame"])
+    plan = build_plan(data, shot, instruction_path, min(dpi or DEVELOP_DPI, frame.dpi))
+    camera = plan["camera"]
+    light, light_assumed = lighting(shot.get("look"), camera["headingDeg"])
+    materials, material_assumed = assign(shot)
+    plan["develop"] = {"lighting": light, "materials": materials}
+    plan["assumptions"] += light_assumed + material_assumed
+    passes = ["完成", "線画", "トーン", "影"] + (["遠景"] if "遠景" in plan["render"]["passes"] else [])
+    plan["render"]["passes"] = passes
+    return plan

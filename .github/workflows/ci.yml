@@ -26,6 +26,7 @@ jobs:
             python -m name_blockout check "$f"
             python -m name_blockout blockout "$f" --dpi 100
           done
+          python -m name_blockout develop examples/develop/指示.json --dpi 100
       - uses: actions/upload-artifact@v4
         if: always()
         with:
