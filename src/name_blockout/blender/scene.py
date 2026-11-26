@@ -581,6 +581,20 @@ def _brightness(mat) -> float:
     return min(shown)
 
 
+#: A surface at most this thick (m) and at least this large (m², from above) counts as a ground or a floor.
+FLAT_HEIGHT = 0.4
+FLAT_AREA = 12.0
+FLAT = "白地"
+#: What a flat surface keeps: ベタ, glass and water are not ground.
+KEEP_ON_FLAT = ("黒い塗装", "ガラス", "水")
+
+
+def _flat_and_large(obj) -> bool:
+    points = [obj.matrix_world @ Vector(c) for c in obj.bound_box]
+    xs, ys, zs = ([p[i] for p in points] for i in range(3))
+    return max(zs) - min(zs) <= FLAT_HEIGHT and (max(xs) - min(xs)) * (max(ys) - min(ys)) >= FLAT_AREA
+
+
 def add_place(place: dict):
     """The place's collection from its .blend (appended, so the scene is whole on its own), without its cameras, its
     lights (the development lights the scene) and the mannequins left in it; what the author moves is moved, what
@@ -640,6 +654,10 @@ def add_place(place: dict):
             if mat is not None and g not in ("ガラス",) and _brightness(mat) < DARK_PAINT:
                 g = "黒い塗装"
             guessed.append(g)
+        # A large flat surface (a lot's ground, a lawn, a terrace, a flat roof) stays white as a manga leaves it, its
+        # shadows toned: a whole ground in grey weighs the picture down.
+        if _flat_and_large(o):
+            guessed = [g if g in KEEP_ON_FLAT else FLAT for g in guessed]
         o["nb_place_materials"] = guessed
         leafy = [g in FOLIAGE for g in guessed]
         text = " ".join([o.name] + [m.name for m in slots if m]).lower()

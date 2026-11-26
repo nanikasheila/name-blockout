@@ -291,7 +291,7 @@ def _house_blend(folder: Path) -> None:
     boxes = {
         "Wall_N": ((0, 12, 1.4), (12, 0.2, 2.8), "Plaster"),
         "Ceiling": ((0, 6, 2.5), (12, 12, 0.1), "Plaster"),
-        "Roof": ((0, 6, 3.2), (13, 13, 0.2), "Roof_tiles"),
+        "Roof": ((0, 6, 3.4), (13, 13, 0.6), "Roof_tiles"),
         "Tree_leaves": ((-8, 20, 4), (4, 4, 4), "Leaf"),
         "VAN": ((400, 0, 1), (4.5, 1.8, 2), "Paint"),
         "Sign_board": ((3, 8, 1), (1, 0.1, 1), "Paint"),
@@ -315,7 +315,7 @@ def _house_blend(folder: Path) -> None:
     # The room's floor at the light's ground's height (z 0): they must not shade each other.
     floor = bpy.data.meshes.new("Floor")
     floor.from_pydata([(-6, -6, 0), (6, -6, 0), (6, 14, 0), (-6, 14, 0)], [], [(0, 1, 2, 3)])
-    floor.materials.append(bpy.data.materials.new("Floor_wood"))
+    floor.materials.append(bpy.data.materials.new("Lawn"))
     coll.objects.link(bpy.data.objects.new("Floor", floor))
     # A shell: a wall and the ceiling over it in one mesh (as models often are).
     shell = bpy.data.meshes.new("Shell")
@@ -375,6 +375,8 @@ def test_develop_in_a_place(tmp_path):
     # Left out of the .blend's renders: not in the place (unless shown); a dark paint is ベタ; panels outline only.
     assert "Old_take" not in names and not van.hide_render and van["nb_place_materials"] == ["黒い塗装"]
     assert bpy.data.objects["Solar_panel"].get("nb_foliage")
+    # A large flat lawn is ground: white, not the grass's grey.
+    assert bpy.data.objects["Floor"]["nb_place_materials"] == ["白地"]
     assert "NB_lines_near_foliage" in [ls.name for ls in bpy.context.view_layer.freestyle_settings.linesets]
 
     shot["look"] = {"setting": "indoor", "light": {"key": "interior"}}
