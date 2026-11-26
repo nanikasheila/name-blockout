@@ -555,6 +555,7 @@ def _hidden(name: str, hide) -> bool:
 #: On a ベタ thing (a black van) the pen draws its folds sharper than this (degrees) in white: its windows' frames, its
 #: roof's edge, its doors' seams; a box's corners alone would leave a black lump.
 SHARP_ON_BETA_DEG = 35.0
+SHARP_MIN_M = 0.08
 
 
 def mark_sharp(obj) -> None:
@@ -563,7 +564,13 @@ def mark_sharp(obj) -> None:
     bm = bmesh.new()
     bm.from_mesh(mesh)
     limit = math.radians(SHARP_ON_BETA_DEG)
-    sharp = [e.is_boundary or (len(e.link_faces) == 2 and e.calc_face_angle(0.0) > limit) for e in bm.edges]
+    # Long folds only: a bolt's or a vent's tiny facets would make thousands of strokes for nothing (and slow
+    # Freestyle down several times).
+    scale = max(obj.matrix_world.to_scale())
+    sharp = [
+        e.calc_length() * scale >= SHARP_MIN_M and (e.is_boundary or (len(e.link_faces) == 2 and e.calc_face_angle(0.0) > limit))
+        for e in bm.edges
+    ]
     bm.free()
     attr = mesh.attributes.get("freestyle_edge") or mesh.attributes.new("freestyle_edge", "BOOLEAN", "EDGE")
     attr.data.foreach_set("value", sharp)

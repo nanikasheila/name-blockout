@@ -26,6 +26,8 @@ LINE_PX_AT_150DPI = 1.6
 #: The ground's grid: its lines thin and grey.
 GROUNDS = ("ground",)
 GROUND_LINE = (0.45, 0.45, 0.45)
+#: A crown's shortest stroke, in the shortest strokes of the rest.
+FOLIAGE_MIN_STROKE = 3.0
 #: The shortest stroke drawn, in line widths.
 MIN_STROKE_WIDTHS = 3.0
 
@@ -60,8 +62,12 @@ def _freestyle(scene, thickness: float):
             ls.select_by_face_marks = True
             ls.face_mark_negation = "EXCLUSIVE"
             ls.face_mark_condition = "ONE"
-            # Crowns: their outline against what is behind them, nothing inside.
-            leaves = _lineset(fs, f"NB_lines_{group}_foliage", coll, style)
+            # Crowns: their outline against what is behind them, nothing inside; their strokes chained long and the
+            # short bits between lumps left out.
+            crown = style.copy()
+            crown.name = f"NB_style_{group}_foliage"
+            crown.length_min = style.length_min * FOLIAGE_MIN_STROKE
+            leaves = _lineset(fs, f"NB_lines_{group}_foliage", coll, crown)
             leaves.select_crease = False
             leaves.select_edge_mark = False
             leaves.select_by_face_marks = True

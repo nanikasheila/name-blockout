@@ -60,6 +60,9 @@ FACE_AWAY = -0.02
 OVERHEAD_DEG = 70.0
 #: A surface counts as looking up (a floor, the ground) when its normal's z is above this.
 UP_NORMAL = 0.9
+#: Heights within a joint's reach differing more than this (m) make it a step's edge, drawn black.
+STEP_M = 0.03
+HEIGHT_OFFSET = 1000.0
 #: The joints on such a surface: their grey and how much of their line is kept.
 JOINT_GREY = 0.35
 JOINT_ALPHA = 0.7
@@ -142,13 +145,21 @@ def add_sun(light: dict):
     return obj
 
 
-def _render(path: Path, samples: int, transparent: bool = True) -> np.ndarray:
+def _render(path: Path, samples: int, transparent: bool = True, exact: bool = False) -> np.ndarray:
+    """A render loaded back (rows from the top); `exact`: as floats (OpenEXR), not as shown on a screen."""
     scene = bpy.context.scene
     scene.cycles.samples = samples
     scene.render.film_transparent = transparent
     scene.render.use_freestyle = False
     scene.render.filepath = str(path)
+    settings = scene.render.image_settings
+    keep = (settings.file_format, settings.color_depth)
+    if exact:
+        settings.file_format = "OPEN_EXR"
+        settings.color_depth = "32"
     bpy.ops.render.render(write_still=True)
+    if exact:
+        settings.file_format, settings.color_depth = keep
     image = bpy.data.images.load(str(path), check_existing=False)
     w, h = image.size
     pixels = np.empty(w * h * 4, dtype=np.float32)
@@ -310,8 +321,11 @@ def develop_passes(plan: dict, built: dict, out_dir: Path, samples: int = 16) ->
     # sides) are drawn thin and grey; a step's edge, a wall's foot and every outline stay black.
     layer.material_override = _facing_up()
     facing = _render(out_dir / "_up.png", 1)
-    layer.material_override = None
     up = (facing[..., 3] > 0.5) & (facing[..., 0] > _srgb(UP_NORMAL))
+    # …and how high each pixel's surface is: a step's edge has up on both sides too, at two heights.
+    layer.material_override = _height()
+    height = _render(out_dir / "_height.exr", 1, exact=True)[..., 0] - HEIGHT_OFFSET
+    layer.material_override = None
 
     # 3. Put together; at dawn, dusk and night the sky is toned too.
     tone = np.where(shadow[..., None], shadow_tones, lit_tones)
@@ -330,11 +344,12 @@ def develop_passes(plan: dict, built: dict, out_dir: Path, samples: int = 16) ->
     lines = _load(files["線画"]) if "線画" in files else np.zeros((h, w, 4), dtype=np.float32)
     reach = max(2, round(LINE_PX_AT_150DPI * plan["render"]["dpi"] / 150 * 1.2))
     if "線画" in files:
-        lines = grey_joints(lines, up, reach)
+        line_px = LINE_PX_AT_150DPI * plan["render"]["dpi"] / 150
+        lines = grey_joints(lines, up, reach, height, thin=int(line_px // 3))
         _save(files["線画"], lines)
     files["完成"] = _save(out_dir / "完成.png", _over(white_on_beta(lines, tone, reach), _over(tone, white)))
     check = shadow_check(plan, built, shadow, lit, sun)
-    for name in ("_lit.png", "_shadow.png", "_up.png"):
+    for name in ("_lit.png", "_shadow.png", "_up.png", "_height.exr"):
         (out_dir / name).unlink(missing_ok=True)
     if grid is not None:
         grid.hide_render = False
@@ -436,14 +451,59 @@ def erode(mask: np.ndarray, r: int) -> np.ndarray:
     return out
 
 
-def grey_joints(lines: np.ndarray, up: np.ndarray, reach: int) -> np.ndarray:
+def _height():
+    """A material showing each surface's height (world z + HEIGHT_OFFSET, to be read back exactly)."""
+    mat = bpy.data.materials.get(PREFIX + "height") or bpy.data.materials.new(PREFIX + "height")
+    mat.use_nodes = True
+    nodes, links = mat.node_tree.nodes, mat.node_tree.links
+    nodes.clear()
+    out = nodes.new("ShaderNodeOutputMaterial")
+    geo = nodes.new("ShaderNodeNewGeometry")
+    split = nodes.new("ShaderNodeSeparateXYZ")
+    add = nodes.new("ShaderNodeMath")
+    add.operation = "ADD"
+    add.inputs[1].default_value = HEIGHT_OFFSET
+    emit = nodes.new("ShaderNodeEmission")
+    links.new(geo.outputs["Position"], split.inputs[0])
+    links.new(split.outputs["Z"], add.inputs[0])
+    links.new(add.outputs[0], emit.inputs["Strength"])
+    emit.inputs["Color"].default_value = (1.0, 1.0, 1.0, 1.0)
+    links.new(emit.outputs[0], out.inputs[0])
+    return mat
+
+
+def _spread(values: np.ndarray, r: int, pick) -> np.ndarray:
+    """Each pixel's highest (pick=np.maximum) or lowest (np.minimum) value within r pixels (a square, two passes)."""
+    out = values.copy()
+    for axis in (0, 1):
+        src = out.copy()
+        for d in range(1, r + 1):
+            if axis == 0:
+                out[d:] = pick(out[d:], src[:-d])
+                out[:-d] = pick(out[:-d], src[d:])
+            else:
+                out[:, d:] = pick(out[:, d:], src[:, :-d])
+                out[:, :-d] = pick(out[:, :-d], src[:, d:])
+    return out
+
+
+def grey_joints(lines: np.ndarray, up: np.ndarray, reach: int, height: np.ndarray | None = None, thin: int = 0):
     """The lines lying inside a surface that looks up (a floor's boards, a lot's paving: up on every side within
-    `reach` pixels, the line's own pixels counted as up) drawn grey and lighter."""
+    `reach` pixels, the line's own pixels counted as up, and all at one height: a step's edge is not a joint) drawn
+    grey, lighter and thinner (their middle `thin` pixels in from each side kept)."""
     drawn = lines[..., 3] > 0.05
     inside = erode(up | drawn, reach) & drawn
+    if height is not None:
+        seen = up & np.isfinite(height)
+        hi = _spread(np.where(seen, height, -np.inf), reach, np.maximum)
+        lo = _spread(np.where(seen, height, np.inf), reach, np.minimum)
+        inside &= (hi - lo) < STEP_M
     out = lines.copy()
     out[inside, :3] = JOINT_GREY
     out[inside, 3] *= JOINT_ALPHA
+    if thin:
+        edge = inside & ~erode(drawn, thin)
+        out[edge, 3] = 0.0
     return out
 
 

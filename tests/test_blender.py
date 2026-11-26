@@ -447,3 +447,22 @@ def test_majority_removes_speckles_keeps_edges():
     out = majority(mask, 2)
     assert not out[5, 5] and out[20, 25]
     assert (out[:, 15:] == True).all() and not out[:, :15].any()  # noqa: E712
+
+
+@needs_blender
+def test_a_step_edge_is_not_a_joint():
+    """A line between two surfaces looking up at two heights (a step's edge) stays black; a joint in one floor greys."""
+    import numpy as np
+
+    from name_blockout.blender.develop import grey_joints
+
+    h, w = 40, 60
+    lines = np.zeros((h, w, 4), dtype=np.float32)
+    lines[20, :, 3] = 1.0  # the step's edge
+    lines[:, 40, 3] = 1.0  # a joint
+    up = np.ones((h, w), dtype=bool)
+    height = np.zeros((h, w), dtype=np.float32)
+    height[:20] = 0.2  # the step's top, 20 cm over the floor
+    out = grey_joints(lines, up, 3, height)
+    assert out[20, 10, 0] == 0.0 and out[20, 10, 3] == 1.0
+    assert out[5, 40, 0] > 0.2 and out[30, 40, 0] > 0.2
