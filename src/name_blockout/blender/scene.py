@@ -17,7 +17,7 @@ import bpy
 from mathutils import Matrix, Vector
 
 from ..far import BANDS, TONE_LIFT
-from ..materials import FOLIAGE, guess_part
+from ..materials import DEFAULT, FOLIAGE, guess_part
 
 PREFIX = "NB_"
 #: Which light the tones take (from above, in front, a little left of the camera's usual view).
@@ -323,17 +323,40 @@ def add_mountains(layer: dict, coll, material):
 
 
 def add_trees(layer: dict, coll, material):
-    """Cones on a short trunk, all in one mesh."""
+    """The trees in one mesh: a short trunk, and a crown of a few lumpy balls (broadleaf) or a cone (conifer); the
+    crowns' faces marked so only their outlines are drawn."""
     bm = bmesh.new()
+    crown_faces = set()
     for t in layer["trees"]:
         h, r = t["heightM"], t["radiusM"]
-        trunk = h * 0.18
-        made = bmesh.ops.create_cone(bm, cap_ends=True, segments=8, radius1=r, radius2=0.0, depth=h - trunk)
         x, y, z = t["centreM"]
-        bmesh.ops.translate(bm, vec=(x, y, z + trunk + (h - trunk) / 2), verts=made["verts"])
-        stem = bmesh.ops.create_cone(bm, cap_ends=True, segments=6, radius1=r * 0.12, radius2=r * 0.12, depth=trunk)
+        trunk = h * (0.18 if t.get("form") == "conifer" else 0.3)
+        stem = bmesh.ops.create_cone(bm, cap_ends=True, segments=6, radius1=r * 0.1, radius2=r * 0.08, depth=trunk)
         bmesh.ops.translate(bm, vec=(x, y, z + trunk / 2), verts=stem["verts"])
-    return _mesh_object(PREFIX + "trees", bm, coll, material)
+        before = set(bm.faces)
+        if t.get("form") == "conifer":
+            made = bmesh.ops.create_cone(bm, cap_ends=True, segments=8, radius1=r, radius2=0.0, depth=h - trunk)
+            bmesh.ops.translate(bm, vec=(x, y, z + trunk + (h - trunk) / 2), verts=made["verts"])
+        else:
+            rng = random.Random(t.get("seed", 0))
+            # The crown from a little under the trunk's top to the tree's height: a big middle lump and smaller ones
+            # round it, overlapping (no gaps to the sky between them or above the trunk).
+            crown = h - trunk * 0.8
+            middle = z + h - crown / 2
+            for i in range(4):
+                k = 0.85 if i == 0 else rng.uniform(0.55, 0.7)
+                off = 0.0 if i == 0 else 0.4
+                centre = Vector((x + rng.uniform(-off, off) * r, y + rng.uniform(-off, off) * r, middle + rng.uniform(-0.15, 0.2) * crown))
+                ball = bmesh.ops.create_icosphere(bm, subdivisions=2, radius=1.0)
+                for v in ball["verts"]:
+                    lump = 1.0 + rng.uniform(-0.1, 0.1)
+                    v.co = centre + Vector((v.co.x * r * k, v.co.y * r * k, v.co.z * crown * k * 0.5)) * lump
+        crown_faces |= set(bm.faces) - before
+    bm.faces.index_update()
+    marks = [f in crown_faces for f in bm.faces]
+    obj = _mesh_object(PREFIX + "trees", bm, coll, material)
+    mark_foliage(obj, marks)
+    return obj
 
 
 def panorama_world(layer: dict):
@@ -529,11 +552,12 @@ def _hidden(name: str, hide) -> bool:
     return any(name == h or name.startswith(h) for h in hide or [])
 
 
-def mark_foliage(obj) -> None:
-    """Every face of a crown or a bush marked: its facets give no lines, only its outline (render.py)."""
+def mark_foliage(obj, faces=None) -> None:
+    """The faces of a crown or a bush marked (all, or those `faces` says): they give no lines inside, only their
+    outline (render.py)."""
     mesh = obj.data
     attr = mesh.attributes.get("freestyle_face") or mesh.attributes.new("freestyle_face", "BOOLEAN", "FACE")
-    attr.data.foreach_set("value", [True] * len(mesh.polygons))
+    attr.data.foreach_set("value", faces if faces is not None else [True] * len(mesh.polygons))
     obj["nb_foliage"] = True
 
 
@@ -575,10 +599,13 @@ def add_place(place: dict):
         if o.type != "MESH":
             continue
         names = [s.material.name if s.material else "" for s in o.material_slots] or [""]
-        guessed = [guess_part(o.name, n) for n in names]
+        # The object's own name and its material's first, then its collections' (H_plants, 植栽…) as a fallback.
+        groups = [c.name for c in o.users_collection]
+        guessed = [guess_part(o.name, n) if guess_part(o.name, n) != DEFAULT else guess_part(o.name, n, *groups) for n in names]
         o["nb_place_materials"] = guessed
-        if all(g in FOLIAGE for g in guessed):
-            mark_foliage(o)
+        leafy = [g in FOLIAGE for g in guessed]
+        if any(leafy):
+            mark_foliage(o, [leafy[min(poly.material_index, len(leafy) - 1)] for poly in o.data.polygons])
     return coll
 
 

@@ -10,6 +10,8 @@ shift or matrix shows as a difference from the instruction's targets.
 
 from __future__ import annotations
 
+import math
+
 import bpy
 import numpy as np
 from bpy_extras.object_utils import world_to_camera_view
@@ -18,6 +20,8 @@ from mathutils import Vector
 FAR = 1.0e5
 AXIS = {"+X": (1, 0, 0), "-X": (-1, 0, 0), "+Y": (0, 1, 0), "-Y": (0, -1, 0), "+Z": (0, 0, 1), "-Z": (0, 0, -1)}
 MAX_EDGES = 400
+#: An edge counts as running along an axis within this cosine (about 0.26°).
+ALIGNED = 0.99999
 
 
 class Projector:
@@ -73,7 +77,7 @@ def world_edges(objects, direction: Vector, limit: int = MAX_EDGES):
             d = b - a
             if d.length < 1e-6:
                 continue
-            if abs(d.normalized().dot(direction)) > 0.99999:
+            if abs(d.normalized().dot(direction)) > ALIGNED:
                 out.append((a.copy(), b.copy()))
         ev.to_mesh_clear()
     if len(out) > limit:
@@ -108,7 +112,26 @@ def edge_vanishing(p: Projector, objects, axis: str):
     if len(lines) < 2:
         return None
     point = meet(lines)
+    if point and len(lines) >= 10:
+        # A few edges of a piece set a little askew (a place's model) would pull the point: leave out the lines that
+        # miss it most (the worst tenth, those over 0.1°) and meet the rest.
+        errs = sorted(((_miss_deg(line, point), i) for i, line in enumerate(lines)), reverse=True)
+        drop = {i for err, i in errs[: len(lines) // 10] if err > 0.1}
+        if drop:
+            kept = [line for i, line in enumerate(lines) if i not in drop]
+            point = meet(kept) or point
+            return {"point": point, "lines": len(kept), "leftOut": len(drop)}
     return {"point": point, "lines": len(lines)} if point else None
+
+
+def _miss_deg(line, point) -> float:
+    """The angle at a line's middle between the line and the way to `point`."""
+    (x0, y0), (x1, y1) = line
+    mx, my = (x0 + x1) / 2, (y0 + y1) / 2
+    a = math.atan2(y1 - y0, x1 - x0)
+    b = math.atan2(point[1] - my, point[0] - mx)
+    d = abs(math.degrees(a - b)) % 180
+    return min(d, 180 - d)
 
 
 def outline(p: Projector, objects):

@@ -374,9 +374,11 @@ def default_far(shot: dict) -> list[dict]:
     stand, else trees with mountains behind (seeded by the shot, so the same each time)."""
     seed = sum(ord(ch) for ch in str(shot.get("id") or "shot"))
     kinds = {kind_of(o) for o in shot.get("objects") or []}
+    # Low hills between the near trees and the far mountains, so the distance steps back in layers.
+    hills = {"kind": "mountains", "seed": seed + 2, "distanceM": 1800.0, "heightM": [30.0, 140.0]}
     if kinds & TOWN_KINDS:
-        return [{"kind": "skyline", "seed": seed}, {"kind": "mountains", "seed": seed + 1}]
-    return [{"kind": "trees", "seed": seed}, {"kind": "mountains", "seed": seed + 1}]
+        return [{"kind": "skyline", "seed": seed}, hills, {"kind": "mountains", "seed": seed + 1}]
+    return [{"kind": "trees", "seed": seed}, hills, {"kind": "mountains", "seed": seed + 1}]
 
 
 def build_develop_plan(data: dict, shot: dict, instruction_path: str | Path | None = None, dpi: float | None = None) -> dict:
@@ -426,7 +428,7 @@ def build_develop_plan(data: dict, shot: dict, instruction_path: str | Path | No
             "形のひな形がない物: " + "・".join(plain) + "（箱のまま。objects[].shape に部品を書くか、素材を足してください）"
         )
     if far_assumed:
-        kinds = "・".join(FAR_LABELS[layer["kind"]] for layer in far_assumed)
+        kinds = "・".join(dict.fromkeys(FAR_LABELS[layer["kind"]] for layer in far_assumed))
         plan["notes"].append(f"遠景が決まっていないので {kinds} を置いた")
         plan["assumptions"].append({"path": "far", "value": far_assumed, "by": "tool", "note": f"遠景が決まっていないので{kinds}"})
     plan["assumptions"] += ([setting_assumed] if setting_assumed else []) + light_assumed + material_assumed

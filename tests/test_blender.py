@@ -304,6 +304,11 @@ def _house_blend(folder: Path) -> None:
         mesh.from_pydata(verts, [], [(0, 1, 3, 2), (4, 6, 7, 5), (0, 4, 5, 1), (2, 3, 7, 6), (0, 2, 6, 4), (1, 5, 7, 3)])
         mesh.materials.append(bpy.data.materials.new(mat))
         coll.objects.link(bpy.data.objects.new(name, mesh))
+    # A shell: a wall and the ceiling over it in one mesh (as models often are).
+    shell = bpy.data.meshes.new("Shell")
+    shell.from_pydata([(-6, 14, 0), (6, 14, 0), (6, 14, 2.6), (-6, 14, 2.6), (-6, 2, 2.6), (6, 2, 2.6)], [], [(0, 1, 2, 3), (3, 2, 5, 4)])
+    shell.materials.append(bpy.data.materials.new("Plaster"))
+    coll.objects.link(bpy.data.objects.new("Shell", shell))
     lamp = bpy.data.objects.new("SUN", bpy.data.lights.new("SUN", "SUN"))
     coll.objects.link(lamp)
     folder.mkdir(parents=True, exist_ok=True)
@@ -359,3 +364,6 @@ def test_develop_in_a_place(tmp_path):
     bpy.ops.wm.open_mainfile(filepath=str(tmp_path / "blockout" / "panel1" / r["take"] / "scene.blend"))
     assert not bpy.data.objects["Ceiling"].visible_shadow and not bpy.data.objects["Roof"].visible_shadow
     assert bpy.data.objects["Wall_N"].visible_shadow
+    # The shell's ceiling split off from its wall: the ceiling lets the light through, the wall still casts.
+    assert bpy.data.objects["Shell"].visible_shadow and len(bpy.data.objects["Shell"].data.polygons) == 1
+    assert not bpy.data.objects["Shell_above"].visible_shadow and len(bpy.data.objects["Shell_above"].data.polygons) == 1
