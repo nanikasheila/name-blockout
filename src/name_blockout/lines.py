@@ -54,8 +54,6 @@ D_REF_PERCENTILE = 5.0
 DEEPEST_PERCENTILE = 95.0
 #: Beyond this many foregrounds off a boundary counts less: × (FADE_FROM × foreground / distance).
 FADE_FROM = 2.0
-#: A surface whose normal's height is over this is level (ground, a floor, a flat roof's top).
-LEVEL_NORMAL = 0.9
 #: Width = W_MAX × depth^GAMMA (the square root: a boundary a quarter as deep gets half the width, so the middle
 #: depths keep some weight, as a pen's three or four sizes).
 GAMMA = 0.5
@@ -120,13 +118,15 @@ def boundary_depths(
     soft: np.ndarray | None = None,
     d_ref: float | None = None,
     deepest: float | None = None,
+    ground: np.ndarray | None = None,
 ) -> tuple[np.ndarray, float, float]:
     """How deep the boundary at each pixel is (0: none … 1: the deepest), marked on the boundary's near side; the
     foreground distance (`d_ref`) and the deepest boundaries' distance (`deepest`) used.
 
     `z`: each pixel's depth from the camera (m); `thing`: where there is a surface (not the sky); `normal`: each
     pixel's surface normal (unit, 3 values) for the folds; `soft`: surfaces whose folds are not drawn (a crown's
-    lumps, a louvre's slats)."""
+    lumps, a louvre's slats); `ground`: the ground's surfaces (a lot, a lawn: their far end against the sky is a
+    horizon)."""
     q = np.where(thing, 1.0 / np.maximum(z, 1e-3), 0.0).astype(np.float32)
     gap = np.zeros_like(q)
     solid = np.zeros_like(q)  # the same, before things only (not before the sky)
@@ -145,10 +145,10 @@ def boundary_depths(
         found = scales(z, thing, gap)
         d_ref = found[0] if d_ref is None else d_ref
         deepest = found[1] if deepest is None else deepest
-    if normal is not None:
-        # Beyond the foreground, where level ground ends against the sky is a horizon, not a thing's outline: told
+    if ground is not None:
+        # Beyond the foreground, where the ground ends against the sky is a horizon, not a thing's outline: told
         # by the white ground under the sky or the backdrop's tones, with no line.
-        horizon = thing & (normal[..., 2] > LEVEL_NORMAL) & (z > FADE_FROM * d_ref)
+        horizon = thing & ground & (z > FADE_FROM * d_ref)
         gap = np.where(horizon, solid, gap)
     depth = np.minimum(1.0, gap * deepest) * line_fade(z, thing, d_ref)
     if normal is not None:
@@ -231,17 +231,19 @@ def boundary_lines(
     d_ref: float | None = None,
     deepest: float | None = None,
     flat: np.ndarray | None = None,
+    ground: np.ndarray | None = None,
 ) -> tuple[np.ndarray, dict]:
     """The lines' ink (0–1) at the picture's size, from passes drawn `by` times as large; and what was measured
     (the foreground distance, the deepest boundaries' distance, the share of the picture inked and the lines'
-    widths, by band). `flat`: surfaces that get no lines of their own (the far band's layers: flat tones)."""
+    widths, by band). `flat`: surfaces that get no lines of their own (the far band's layers: flat tones);
+    `ground`: the ground's surfaces (no line where they end against the sky far off)."""
     lined = thing if flat is None else thing & ~flat
     if d_ref is None or deepest is None:
         # The picture's scales from the things that are lined (a backdrop's skyline is not its foreground).
-        found = boundary_depths(z, lined, normal)[1:]
+        found = boundary_depths(z, lined, ground=ground)[1:]
         d_ref = found[0] if d_ref is None else d_ref
         deepest = found[1] if deepest is None else deepest
-    depth, d_ref, deepest = boundary_depths(z, thing, normal, soft, d_ref, deepest)
+    depth, d_ref, deepest = boundary_depths(z, thing, normal, soft, d_ref, deepest, ground)
     if flat is not None:
         depth[flat] = 0.0
     width, black = widths(depth, px_per_mm * by)

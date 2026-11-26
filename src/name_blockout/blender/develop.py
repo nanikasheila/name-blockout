@@ -44,6 +44,10 @@ from .scene import PREFIX, collection
 #: Set (to anything) to keep the working passes beside the pictures (_depth.exr, _normal.exr…), for looking into
 #: how a line or a tone came out.
 KEEP_ENV = "NAME_BLOCKOUT_KEEP"
+#: The object numbers the depth pass tells surfaces by: the backdrop's (the far band: flat tones, no lines) and the
+#: ground's (the light's ground, a place's lot or lawn: no line where it ends against the sky far off).
+BACKDROP_INDEX = 1
+GROUND_INDEX = 2
 #: Under this share of the light a white face gets facing the sun, a pixel is in shadow.
 SHADOW_SHARE = 0.12
 SHADOW_RGBA = (0.25, 0.25, 0.3, 0.55)
@@ -365,6 +369,10 @@ def develop_passes(plan: dict, built: dict, out_dir: Path, samples: int = 16) ->
     # smooth. A line is as thick as its boundary is deep; far things get none, and are told by their tones.
     setup(plan)
     tone_far()
+    ground.pass_index = GROUND_INDEX
+    for obj in place:
+        if obj.get("nb_ground"):
+            obj.pass_index = GROUND_INDEX
     grid = bpy.data.collections.get(PREFIX + "ground")
     if grid is not None:
         grid.hide_render = True
@@ -379,13 +387,16 @@ def develop_passes(plan: dict, built: dict, out_dir: Path, samples: int = 16) ->
     if grid is not None:
         grid.hide_render = False
     seen = depths[..., 3] > 0.5
-    backdrop = seen & (depths[..., 2] > 0.5)
-    ink, line_info = boundary_lines(depths[..., 0], seen, normals, depths[..., 1] > 0.5, plan["render"]["dpi"] / 25.4, by, flat=backdrop)
+    backdrop = seen & (np.abs(depths[..., 2] - BACKDROP_INDEX) < 0.5)
+    lot = seen & (np.abs(depths[..., 2] - GROUND_INDEX) < 0.5)
+    ink, line_info = boundary_lines(
+        depths[..., 0], seen, normals, depths[..., 1] > 0.5, plan["render"]["dpi"] / 25.4, by, flat=backdrop, ground=lot
+    )
     # Where the lines thin out with distance the tones take over: a standing thing there (not the ground or a
     # roof's top, not the backdrop) is given at least a light tone, so its shape reads without a line round it.
     standing = seen & ~backdrop & (normals[..., 2] < UP_NORMAL)
     least_tone = tone_floor(depths[::by, ::by, 0][:h, :w], standing[::by, ::by][:h, :w], line_info["foregroundM"])
-    del depths, normals, seen, backdrop, standing
+    del depths, normals, seen, backdrop, lot, standing
 
     # 線画: the texture lines (marked edges, the ground's grid) by Freestyle, fading with distance, without the
     # light's ground; 遠景: the far band alone, its tones.
@@ -603,8 +614,8 @@ FAR_TONES = ((100.0, 0.26), (6000.0, 0.07))
 
 def _depths():
     """A material showing each surface's depth from the camera (m), whether its face is marked soft
-    (freestyle_face: a crown's lumps, a louvre's slats) and whether it is the backdrop's (the far band: its
-    object's index 1, tone_far); to be read back exactly."""
+    (freestyle_face: a crown's lumps, a louvre's slats) and its object's number (BACKDROP_INDEX, GROUND_INDEX,
+    else 0); to be read back exactly."""
     mat = bpy.data.materials.get(PREFIX + "depths") or bpy.data.materials.new(PREFIX + "depths")
     mat.use_nodes = True
     nodes, links = mat.node_tree.nodes, mat.node_tree.links
@@ -680,7 +691,7 @@ def tone_far() -> None:
         if o.type == "MESH":
             o.data.materials.clear()
             o.data.materials.append(mat)
-            o.pass_index = 1
+            o.pass_index = BACKDROP_INDEX
 
 
 def _facing_up():
