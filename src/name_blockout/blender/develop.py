@@ -319,10 +319,18 @@ def develop_passes(plan: dict, built: dict, out_dir: Path, samples: int = 16) ->
 
 def ceiling_cut(scene, camera_at) -> float:
     """The height over which a room's faces count as its ceiling: the floor under the camera + CEILING_OVER_FLOOR."""
+    # The lowest surface under the camera (a camera on a loft or the stairs over a double-height room looks down past
+    # the loft's floor; under a place with no floor of its own, the light's ground).
     depsgraph = bpy.context.evaluated_depsgraph_get()
-    hit, location, *_ = scene.ray_cast(depsgraph, Vector(camera_at), Vector((0, 0, -1)), distance=50.0)
-    floor = location.z if hit else 0.0
-    return floor + CEILING_OVER_FLOOR
+    start, down = Vector(camera_at), Vector((0, 0, -1))
+    floor = None
+    for _ in range(32):
+        hit, location, *_ = scene.ray_cast(depsgraph, start, down, distance=50.0)
+        if not hit:
+            break
+        floor = location.z
+        start = location + down * 1e-3
+    return (floor if floor is not None else 0.0) + CEILING_OVER_FLOOR
 
 
 def split_above(obj, z: float):

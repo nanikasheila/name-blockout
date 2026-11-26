@@ -228,7 +228,8 @@
                 "properties": {
                   "object": { "type": "string" },
                   "positionM": { "$ref": "#/$defs/vec3" },
-                  "turnDeg": { "type": "number" }
+                  "turnDeg": { "type": "number" },
+                  "show": { "description": "場所の .blend で描かない設定（hide_render）の物を描く（子も）。", "type": "boolean" }
                 },
                 "additionalProperties": false
               }
