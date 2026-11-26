@@ -310,9 +310,13 @@ def _house_blend(folder: Path) -> None:
         coll.objects.link(bpy.data.objects.new(name, mesh))
     bpy.data.objects["Old_take"].hide_render = True
     bpy.data.objects["VAN"].hide_render = True
-    van_paint = bpy.data.materials["Paint"]
-    van_paint.use_nodes = True
-    van_paint.node_tree.nodes["Principled BSDF"].inputs["Base Color"].default_value = (0.01, 0.01, 0.012, 1.0)
+    # The van's paint is black only in the viewport's colour (as a .blend drawn with an emission shader keeps it).
+    bpy.data.materials["Paint"].diffuse_color = (0.03, 0.03, 0.03, 1.0)
+    # The room's floor at the light's ground's height (z 0): they must not shade each other.
+    floor = bpy.data.meshes.new("Floor")
+    floor.from_pydata([(-6, -6, 0), (6, -6, 0), (6, 14, 0), (-6, 14, 0)], [], [(0, 1, 2, 3)])
+    floor.materials.append(bpy.data.materials.new("Floor_wood"))
+    coll.objects.link(bpy.data.objects.new("Floor", floor))
     # A shell: a wall and the ceiling over it in one mesh (as models often are).
     shell = bpy.data.meshes.new("Shell")
     shell.from_pydata([(-6, 14, 0), (6, 14, 0), (6, 14, 2.6), (-6, 14, 2.6), (-6, 2, 2.6), (6, 2, 2.6)], [], [(0, 1, 2, 3), (3, 2, 5, 4)])
@@ -383,3 +387,7 @@ def test_develop_in_a_place(tmp_path):
     # The shell's ceiling split off from its wall: the ceiling lets the light through, the wall still casts.
     assert bpy.data.objects["Shell"].visible_shadow and len(bpy.data.objects["Shell"].data.polygons) == 1
     assert not bpy.data.objects["Shell_above"].visible_shadow and len(bpy.data.objects["Shell_above"].data.polygons) == 1
+    assert bpy.data.objects["NB_light_ground"].data.vertices[0].co.z < -0.01
+    light = json.loads((tmp_path / "blockout" / "panel1" / r["take"] / "check.json").read_text(encoding="utf-8"))
+    faces = next(c for c in light["checks"] if c["name"] == "影の向き")["faces"]
+    assert faces["sunny"][1] > 0 and faces["sunny"][0] / faces["sunny"][1] > 0.85, faces

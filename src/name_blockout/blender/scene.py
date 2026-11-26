@@ -561,23 +561,24 @@ def mark_foliage(obj, faces=None) -> None:
     obj["nb_foliage"] = True
 
 
-#: A material darker than this (its base colour's brightness, 0…1 as shown) is drawn as ベタ.
-DARK_PAINT = 0.12
+#: A material darker than this (its colour's brightness, 0…1 as shown on the screen) is drawn as ベタ: a black van's
+#: paint is about 0.03 in light, 0.19 shown.
+DARK_PAINT = 0.25
 
 
 def _brightness(mat) -> float:
-    """How bright a material's base colour shows (the Principled BSDF's Base Color, else its viewport colour)."""
-    colour = None
+    """How bright a material's colour shows: the darker of its Principled BSDF's Base Color and its viewport colour
+    (a .blend drawn with an emission shader keeps its real colour only in the viewport's)."""
+    colours = [mat.diffuse_color]
     if mat.use_nodes and mat.node_tree:
         for node in mat.node_tree.nodes:
             if node.type == "BSDF_PRINCIPLED" and not node.inputs["Base Color"].is_linked:
-                colour = node.inputs["Base Color"].default_value
-                break
-    if colour is None:
-        colour = mat.diffuse_color
-    r, g, b = colour[0], colour[1], colour[2]
-    linear = 0.2126 * r + 0.7152 * g + 0.0722 * b
-    return 12.92 * linear if linear <= 0.0031308 else 1.055 * linear ** (1 / 2.4) - 0.055
+                colours.append(node.inputs["Base Color"].default_value)
+    shown = []
+    for c in colours:
+        linear = 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]
+        shown.append(12.92 * linear if linear <= 0.0031308 else 1.055 * linear ** (1 / 2.4) - 0.055)
+    return min(shown)
 
 
 def add_place(place: dict):
