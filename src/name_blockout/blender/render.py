@@ -22,17 +22,43 @@ import bpy
 from ..far import BANDS, LINE_SCALE
 from .scene import PREFIX, holdout_material
 
-LINE_PX_AT_150DPI = 1.6
+#: A pen's widths, in mm on the page (a 0.18 mm outline, 0.11 mm inside it, as a background's fine liners), and
+#: the thinnest drawn in pixels (a small picture would lose them).
+OUTLINE_MM = 0.18
+INNER_MM = 0.11
+MIN_OUTLINE_PX = 1.4
+MIN_INNER_PX = 0.9
 #: The ground's grid: its lines thin and grey.
 GROUNDS = ("ground",)
 GROUND_LINE = (0.45, 0.45, 0.45)
-#: A crown's shortest stroke, in the shortest strokes of the rest.
-FOLIAGE_MIN_STROKE = 3.0
+#: A crown's inner strokes (one lump before another): only the long ones, in the shortest strokes of the rest.
+FOLIAGE_MIN_STROKE = 6.0
 #: The shortest stroke drawn, in line widths.
 MIN_STROKE_WIDTHS = 3.0
 
 
-def _freestyle(scene, thickness: float):
+def line_px(dpi: float) -> float:
+    """An outline's width in pixels at `dpi`."""
+    return max(MIN_OUTLINE_PX, OUTLINE_MM * dpi / 25.4)
+
+
+def inner_px(dpi: float) -> float:
+    """A crease's (an edge inside an outline) width in pixels at `dpi`."""
+    return max(MIN_INNER_PX, INNER_MM * dpi / 25.4)
+
+
+def _style(name: str, color, thickness: float, length_min: float):
+    style = bpy.data.linestyles.new(name)
+    style.color = color
+    style.thickness = thickness
+    style.thickness_position = "CENTER"
+    # Strokes shorter than a few line widths are specks (a crease on a small facet), not lines a pen would draw.
+    style.use_length_min = True
+    style.length_min = length_min
+    return style
+
+
+def _freestyle(scene, dpi: float):
     scene.render.use_freestyle = True
     scene.render.line_thickness_mode = "ABSOLUTE"
     layer = bpy.context.view_layer
@@ -41,38 +67,51 @@ def _freestyle(scene, thickness: float):
     fs.crease_angle = 2.3  # ~132°: box edges, not a curved body's facets
     for ls in list(fs.linesets):
         fs.linesets.remove(ls)
+    outline, inner = line_px(dpi), inner_px(dpi)
     for group in (*BANDS, *GROUNDS):
         coll = bpy.data.collections.get(PREFIX + (group if group in GROUNDS else "band_" + group))
         if coll is None or not coll.all_objects:
             continue
-        style = bpy.data.linestyles.new(f"NB_style_{group}")
-        # The ground's grid is thin and grey, as a background artist draws a lot's paving (a place's joints: develop.py).
-        style.color = GROUND_LINE if group in GROUNDS else (0, 0, 0)
-        style.thickness = max(0.75, thickness * LINE_SCALE[group])
-        style.thickness_position = "CENTER"
-        # Strokes shorter than a few line widths are specks (a crease on a small facet), not lines a pen would draw.
-        style.use_length_min = True
-        style.length_min = max(3.0, thickness * MIN_STROKE_WIDTHS)
+        scale = LINE_SCALE[group]
+        if group in GROUNDS:
+            # The ground's grid is thin and grey, as a background artist draws a lot's paving (a place's joints:
+            # develop.py).
+            width = max(0.75, outline * scale)
+            ls = _lineset(fs, f"NB_lines_{group}", coll, _style(f"NB_style_{group}", GROUND_LINE, width, width * 3))
+            ls.select_crease = True
+            ls.select_edge_mark = True
+            continue
+        # Two pens, as an artist holds them: the outline (a thing against what is behind it) thicker, the edges
+        # inside it (creases, marked edges) thinner.
+        w_out, w_in = max(0.75, outline * scale), max(0.6, inner * scale)
+        out_style = _style(f"NB_style_{group}", (0, 0, 0), w_out, max(3.0, w_out * MIN_STROKE_WIDTHS))
+        in_style = _style(f"NB_style_{group}_inner", (0, 0, 0), w_in, max(3.0, w_out * MIN_STROKE_WIDTHS))
         foliage = any(o.get("nb_foliage") for o in coll.all_objects)
-        # The main set: every edge type, but not on crowns and bushes (their faces are marked: render their outline).
-        ls = _lineset(fs, f"NB_lines_{group}", coll, style)
-        ls.select_crease = True
-        ls.select_edge_mark = True
+        edges = _lineset(fs, f"NB_lines_{group}", coll, out_style)
+        creases = _lineset(fs, f"NB_lines_{group}_inner", coll, in_style)
+        creases.select_silhouette = False
+        creases.select_external_contour = False
+        creases.select_crease = True
+        creases.select_edge_mark = True
         if foliage:
-            ls.select_by_face_marks = True
-            ls.face_mark_negation = "EXCLUSIVE"
-            ls.face_mark_condition = "ONE"
-            # Crowns: their outline against what is behind them, nothing inside; their strokes chained long and the
-            # short bits between lumps left out.
-            crown = style.copy()
-            crown.name = f"NB_style_{group}_foliage"
-            crown.length_min = style.length_min * FOLIAGE_MIN_STROKE
-            leaves = _lineset(fs, f"NB_lines_{group}_foliage", coll, crown)
-            leaves.select_crease = False
-            leaves.select_edge_mark = False
-            leaves.select_by_face_marks = True
-            leaves.face_mark_negation = "INCLUSIVE"
-            leaves.face_mark_condition = "ONE"
+            # Crowns and bushes (their faces marked) get neither set: their outline is drawn below.
+            for ls in (edges, creases):
+                ls.select_by_face_marks = True
+                ls.face_mark_negation = "EXCLUSIVE"
+                ls.face_mark_condition = "ONE"
+            # A crown: its whole outline against what is behind it, unbroken (no length limit beyond the rest's)…
+            rim = _lineset(fs, f"NB_lines_{group}_foliage", coll, out_style)
+            rim.select_silhouette = False
+            # …and inside it only the long strokes where one lump stands before another, thinner.
+            lump = in_style.copy()
+            lump.name = f"NB_style_{group}_foliage"
+            lump.length_min = out_style.length_min * FOLIAGE_MIN_STROKE
+            lumps = _lineset(fs, f"NB_lines_{group}_foliage_inner", coll, lump)
+            lumps.select_external_contour = False
+            for ls in (rim, lumps):
+                ls.select_by_face_marks = True
+                ls.face_mark_negation = "INCLUSIVE"
+                ls.face_mark_condition = "ONE"
 
 
 def _lineset(fs, name: str, coll, style):
@@ -85,6 +124,8 @@ def _lineset(fs, name: str, coll, style):
     ls.select_silhouette = True
     ls.select_border = False
     ls.select_external_contour = True
+    ls.select_crease = False
+    ls.select_edge_mark = False
     ls.linestyle = style
     return ls
 
@@ -111,8 +152,7 @@ def render_passes(plan: dict, out_dir: Path, passes=("完成", "線画", "トー
     scene.view_settings.look = "None"
     w, h = plan["render"]["sizePx"]
     scene.render.resolution_x, scene.render.resolution_y = w, h
-    dpi = plan["render"]["dpi"]
-    _freestyle(scene, max(1.0, LINE_PX_AT_150DPI * dpi / 150))
+    _freestyle(scene, plan["render"]["dpi"])
     layer = bpy.context.view_layer
     out_dir.mkdir(parents=True, exist_ok=True)
     files = {}

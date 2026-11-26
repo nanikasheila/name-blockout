@@ -435,6 +435,31 @@ def test_joints_grey_and_outlines_black():
 
 
 @needs_blender
+def test_a_joint_greys_up_to_the_wall_and_a_narrow_beta_keeps_black_lines():
+    """A joint's end by a wall's foot greys too (no black whisker), the foot stays black; on a strip of ベタ
+    narrower than a few reaches (a dark fascia) the lines stay black (white ones would be specks)."""
+    import numpy as np
+
+    from name_blockout.blender.develop import grey_joints, white_on_beta
+
+    h, w = 40, 60
+    lines = np.zeros((h, w, 4), dtype=np.float32)
+    lines[:, 20, 3] = 1.0  # a joint across the floor
+    lines[30, :, 3] = 1.0  # the wall's foot: below it the wall
+    up = np.zeros((h, w), dtype=bool)
+    up[:30] = True
+    plain = grey_joints(lines, up, 4)
+    tipped = grey_joints(lines, up, 4, tip=2)
+    assert plain[28, 20, 0] == 0.0 and tipped[28, 20, 0] > 0.2
+    assert tipped[30, 40, 0] == 0.0 and tipped[30, 20, 0] == 0.0
+    tone = np.ones((h, w, 4), dtype=np.float32)
+    tone[10:16, 5:55, :3] = 0.0  # a dark fascia, 6 px high
+    lines = np.zeros((h, w, 4), dtype=np.float32)
+    lines[13, 5:55, 3] = 1.0
+    assert white_on_beta(lines, tone, 2)[13, 30, 0] == 0.0
+
+
+@needs_blender
 def test_majority_removes_speckles_keeps_edges():
     import numpy as np
 

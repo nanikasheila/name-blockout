@@ -36,7 +36,7 @@ import numpy as np
 from mathutils import Vector
 
 from ..materials import DEFAULT, LIBRARY
-from .render import LINE_PX_AT_150DPI, render_passes
+from .render import inner_px, line_px, render_passes
 from .scene import PREFIX, collection
 
 #: Under this share of the light a white face gets facing the sun, a pixel is in shadow.
@@ -342,10 +342,10 @@ def develop_passes(plan: dict, built: dict, out_dir: Path, samples: int = 16) ->
     files["影"] = _save(out_dir / "影.png", shade)
     white = np.ones((h, w, 4), dtype=np.float32)
     lines = _load(files["線画"]) if "線画" in files else np.zeros((h, w, 4), dtype=np.float32)
-    reach = max(2, round(LINE_PX_AT_150DPI * plan["render"]["dpi"] / 150 * 1.2))
+    dpi = plan["render"]["dpi"]
+    reach = max(2, round(line_px(dpi) * 1.2))
     if "線画" in files:
-        line_px = LINE_PX_AT_150DPI * plan["render"]["dpi"] / 150
-        lines = grey_joints(lines, up, reach, height, thin=int(line_px // 3))
+        lines = grey_joints(lines, up, reach, height, thin=int(inner_px(dpi) // 3), tip=math.ceil(line_px(dpi) / 2) + 1)
         _save(files["線画"], lines)
     files["完成"] = _save(out_dir / "完成.png", _over(white_on_beta(lines, tone, reach), _over(tone, white)))
     check = shadow_check(plan, built, shadow, lit, sun)
@@ -487,17 +487,45 @@ def _spread(values: np.ndarray, r: int, pick) -> np.ndarray:
     return out
 
 
-def grey_joints(lines: np.ndarray, up: np.ndarray, reach: int, height: np.ndarray | None = None, thin: int = 0):
+def grow(mask: np.ndarray, r: int) -> np.ndarray:
+    """Where `mask` holds somewhere within r pixels (a square)."""
+    return _spread(mask, r, np.maximum)
+
+
+def grey_joints(
+    lines: np.ndarray,
+    up: np.ndarray,
+    reach: int,
+    height: np.ndarray | None = None,
+    thin: int = 0,
+    tip: int = 0,
+):
     """The lines lying inside a surface that looks up (a floor's boards, a lot's paving: up on every side within
     `reach` pixels, the line's own pixels counted as up, and all at one height: a step's edge is not a joint) drawn
-    grey, lighter and thinner (their middle `thin` pixels in from each side kept)."""
+    grey, lighter and thinner (their middle `thin` pixels in from each side kept).
+
+    A joint runs up to a wall's foot or a step's edge: its last `reach` pixels there see the wall, so with `tip` (a
+    little over half an outline's width) a joint's grey goes on along it while the line is flat and up within `tip`
+    pixels, stopping at the black outline it meets (else a black whisker at each joint's end)."""
     drawn = lines[..., 3] > 0.05
-    inside = erode(up | drawn, reach) & drawn
-    if height is not None:
-        seen = up & np.isfinite(height)
-        hi = _spread(np.where(seen, height, -np.inf), reach, np.maximum)
-        lo = _spread(np.where(seen, height, np.inf), reach, np.minimum)
-        inside &= (hi - lo) < STEP_M
+
+    def flat(r: int) -> np.ndarray:
+        ok = erode(up | drawn, r) & drawn
+        if height is not None:
+            seen = up & np.isfinite(height)
+            hi = _spread(np.where(seen, height, -np.inf), r, np.maximum)
+            lo = _spread(np.where(seen, height, np.inf), r, np.minimum)
+            ok &= (hi - lo) < STEP_M
+        return ok
+
+    inside = flat(reach)
+    if tip and tip < reach:
+        near = flat(tip)
+        for _ in range(reach):
+            more = grow(inside, 1) & near
+            if not (more & ~inside).any():
+                break
+            inside |= more
     out = lines.copy()
     out[inside, :3] = JOINT_GREY
     out[inside, 3] *= JOINT_ALPHA
@@ -507,13 +535,20 @@ def grey_joints(lines: np.ndarray, up: np.ndarray, reach: int, height: np.ndarra
     return out
 
 
+#: A ベタ narrower than this many reaches (a dark fascia, a strip of dark glass) keeps its lines black: white lines
+#: on it would be specks.
+BETA_WIDE = 3
+
+
 def white_on_beta(lines: np.ndarray, tone: np.ndarray, reach: int = 0) -> np.ndarray:
     """The lines with those over ベタ (a solid black) turned white, as a manga draws them; within `reach` pixels of
-    the ベタ's edge they stay black (its outline against what is round it)."""
+    the ベタ's edge they stay black (its outline against what is round it), and on a narrow ベタ all stay black."""
     beta = (tone[..., 3] > 0.5) & (tone[..., :3].max(axis=-1) < BETA_SHOWN)
     if reach:
         drawn = lines[..., 3] > 0.05
-        beta = erode(beta | drawn, reach) & beta
+        solid = beta | drawn
+        wide = grow(erode(solid, BETA_WIDE * reach), BETA_WIDE * reach)
+        beta = erode(solid, reach) & beta & wide
     out = lines.copy()
     out[beta, :3] = 1.0 - out[beta, :3]
     return out
