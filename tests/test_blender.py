@@ -567,5 +567,8 @@ def test_device_cpu_when_asked_or_no_gpu(monkeypatch):
     monkeypatch.setattr(render, "_chosen", None)
     assert render.choose_device() == "CPU"
     monkeypatch.setenv(render.DEVICE_ENV, "auto")
+    monkeypatch.setattr(render, "_chosen", "GPU")  # as if a GPU were found
+    assert render.choose_device(1098 * 482) == "CPU"  # a 150 dpi panel: readying the GPU costs more
+    assert render.choose_device(4394 * 1928) == "GPU"
     monkeypatch.setattr(render, "_chosen", None)
     assert render.choose_device() in ("CPU", "GPU")
