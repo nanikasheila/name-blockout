@@ -29,17 +29,21 @@ quietly.
 from __future__ import annotations
 
 import math
+import os
 from pathlib import Path
 
 import bpy
 import numpy as np
 from mathutils import Vector
 
-from ..lines import boundary_lines
+from ..lines import boundary_lines, tone_floor
 from ..materials import DEFAULT, LIBRARY
 from .render import inner_px, line_px, render_passes, setup
 from .scene import PREFIX, collection
 
+#: Set (to anything) to keep the working passes beside the pictures (_depth.exr, _normal.exr…), for looking into
+#: how a line or a tone came out.
+KEEP_ENV = "NAME_BLOCKOUT_KEEP"
 #: Under this share of the light a white face gets facing the sun, a pixel is in shadow.
 SHADOW_SHARE = 0.12
 SHADOW_RGBA = (0.25, 0.25, 0.3, 0.55)
@@ -374,8 +378,14 @@ def develop_passes(plan: dict, built: dict, out_dir: Path, samples: int = 16) ->
     scene.render.resolution_percentage = 100
     if grid is not None:
         grid.hide_render = False
-    ink, line_info = boundary_lines(depths[..., 0], depths[..., 3] > 0.5, normals, depths[..., 1] > 0.5, plan["render"]["dpi"] / 25.4, by)
-    del depths, normals
+    seen = depths[..., 3] > 0.5
+    backdrop = seen & (depths[..., 2] > 0.5)
+    ink, line_info = boundary_lines(depths[..., 0], seen, normals, depths[..., 1] > 0.5, plan["render"]["dpi"] / 25.4, by, flat=backdrop)
+    # Where the lines thin out with distance the tones take over: a standing thing there (not the ground or a
+    # roof's top, not the backdrop) is given at least a light tone, so its shape reads without a line round it.
+    standing = seen & ~backdrop & (normals[..., 2] < UP_NORMAL)
+    least_tone = tone_floor(depths[::by, ::by, 0][:h, :w], standing[::by, ::by][:h, :w], line_info["foregroundM"])
+    del depths, normals, seen, backdrop, standing
 
     # 線画: the texture lines (marked edges, the ground's grid) by Freestyle, fading with distance, without the
     # light's ground; 遠景: the far band alone, its tones.
@@ -462,6 +472,7 @@ def develop_passes(plan: dict, built: dict, out_dir: Path, samples: int = 16) ->
 
     # 3. Put together; at dawn, dusk and night the sky is toned too.
     tone = np.where(shadow[..., None], shadow_tones, lit_tones)
+    tone[..., :3] = np.minimum(tone[..., :3], (1.0 - least_tone)[..., None])
     if cell_ids is not None:
         gaps = cell_gaps(cell_ids, CELL_MIN_PX)
         # A joint as wide as a fine pen's line, kept inside the panel.
@@ -493,8 +504,9 @@ def develop_passes(plan: dict, built: dict, out_dir: Path, samples: int = 16) ->
     files["完成"] = _save(out_dir / "完成.png", _over(white_on_beta(lines, tone, reach), _over(tone, white)))
     check = shadow_check(plan, built, shadow, lit, sun)
     check["lines"] = line_info
-    for name in ("_lit.png", "_shadow.png", "_up.png", "_height.exr", "_depth.exr", "_normal.exr", "_cells.exr"):
-        (out_dir / name).unlink(missing_ok=True)
+    if not os.environ.get(KEEP_ENV):
+        for name in ("_lit.png", "_shadow.png", "_up.png", "_height.exr", "_depth.exr", "_normal.exr", "_cells.exr"):
+            (out_dir / name).unlink(missing_ok=True)
     if grid is not None:
         grid.hide_render = False
     return files, check
@@ -590,8 +602,9 @@ FAR_TONES = ((100.0, 0.26), (6000.0, 0.07))
 
 
 def _depths():
-    """A material showing each surface's depth from the camera (m), and whether its face is marked soft
-    (freestyle_face: a crown's lumps, a louvre's slats); to be read back exactly."""
+    """A material showing each surface's depth from the camera (m), whether its face is marked soft
+    (freestyle_face: a crown's lumps, a louvre's slats) and whether it is the backdrop's (the far band: its
+    object's index 1, tone_far); to be read back exactly."""
     mat = bpy.data.materials.get(PREFIX + "depths") or bpy.data.materials.new(PREFIX + "depths")
     mat.use_nodes = True
     nodes, links = mat.node_tree.nodes, mat.node_tree.links
@@ -604,6 +617,8 @@ def _depths():
     rgb = nodes.new("ShaderNodeCombineXYZ")
     links.new(cam.outputs["View Z Depth"], rgb.inputs[0])
     links.new(marked.outputs["Fac"], rgb.inputs[1])
+    info = nodes.new("ShaderNodeObjectInfo")
+    links.new(info.outputs["Object Index"], rgb.inputs[2])
     emit = nodes.new("ShaderNodeEmission")
     links.new(rgb.outputs[0], emit.inputs["Color"])
     links.new(emit.outputs[0], out.inputs[0])
@@ -665,6 +680,7 @@ def tone_far() -> None:
         if o.type == "MESH":
             o.data.materials.clear()
             o.data.materials.append(mat)
+            o.pass_index = 1
 
 
 def _facing_up():

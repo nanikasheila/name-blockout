@@ -106,6 +106,11 @@ def _freestyle(scene, dpi: float, texture_from: float | None = None):
             ls = _lineset(fs, f"NB_lines_{group}", coll, style)
             ls.select_crease = True
             ls.select_edge_mark = True
+            if texture_from:
+                # A development's ground has no outline of its own: its far edge (the horizon) is told by the
+                # backdrop's tones over the white ground.
+                ls.select_silhouette = False
+                ls.select_external_contour = False
             continue
         if texture_from:
             if group == "far":
