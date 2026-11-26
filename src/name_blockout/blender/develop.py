@@ -58,6 +58,8 @@ FACE_LIT = 0.3
 FACE_AWAY = -0.02
 #: A light higher than this (degrees) is overhead: the ground beside a thing is not checked, its shadow is at its foot.
 OVERHEAD_DEG = 70.0
+#: How far under a place's lowest surface the light's ground lies (m).
+LIGHT_GROUND_BELOW = 0.05
 #: Under the ceiling's light, a place's faces this high above the floor under the camera (m) are the ceiling (and
 #: what is over it): they let the light through.
 CEILING_OVER_FLOOR = 2.0
@@ -96,8 +98,8 @@ def _white_matte():
     return mat
 
 
-def add_light_ground(plan: dict):
-    """A ground to catch shadows (as far as the ground grid goes, else 200 m round the camera)."""
+def add_light_ground(plan: dict, under: float = 0.0):
+    """A ground to catch shadows (as far as the ground grid goes, else 200 m round the camera), at height `under`."""
     ground = plan.get("ground") or {}
     rings = ground.get("rings") or []
     extent = min(400.0, rings[-1]["extentM"]) if rings else 200.0
@@ -108,10 +110,10 @@ def add_light_ground(plan: dict):
     mesh = bpy.data.meshes.new(PREFIX + "light_ground")
     mesh.from_pydata(
         [
-            (cx - extent, cy - extent, 0.0),
-            (cx + extent, cy - extent, 0.0),
-            (cx + extent, cy + extent, 0.0),
-            (cx - extent, cy + extent, 0.0),
+            (cx - extent, cy - extent, under),
+            (cx + extent, cy - extent, under),
+            (cx + extent, cy + extent, under),
+            (cx - extent, cy + extent, under),
         ],
         [],
         [(0, 1, 2, 3)],
@@ -224,7 +226,11 @@ def develop_passes(plan: dict, built: dict, out_dir: Path, samples: int = 16) ->
     light = plan["develop"]["lighting"]
     w, h = plan["render"]["sizePx"]
     scene.render.resolution_x, scene.render.resolution_y = w, h
-    ground = add_light_ground(plan)
+    # Under a place, below its lowest surface: on the same plane as a floor of the place the two would shade each
+    # other black (as the grid does, below), and where the place has ground of its own that takes the shadows.
+    place = built.get("place") or []
+    under = min((min((o.matrix_world @ Vector(c)).z for c in o.bound_box) for o in place), default=0.0)
+    ground = add_light_ground(plan, min(0.0, under - LIGHT_GROUND_BELOW) if place else 0.0)
     sun = add_sun(light)
     keep_world = scene.world
 

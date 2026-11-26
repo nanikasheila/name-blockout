@@ -23,6 +23,9 @@ from ..far import BANDS, LINE_SCALE
 from .scene import PREFIX, holdout_material
 
 LINE_PX_AT_150DPI = 1.6
+#: The ground's grid and a place's grounds (scene.py "flat"): their lines thin and grey.
+GROUNDS = ("ground", "flat")
+GROUND_LINE = (0.45, 0.45, 0.45)
 #: The shortest stroke drawn, in line widths.
 MIN_STROKE_WIDTHS = 3.0
 
@@ -36,12 +39,13 @@ def _freestyle(scene, thickness: float):
     fs.crease_angle = 2.3  # ~132°: box edges, not a curved body's facets
     for ls in list(fs.linesets):
         fs.linesets.remove(ls)
-    for group in (*BANDS, "ground"):
-        coll = bpy.data.collections.get(PREFIX + ("ground" if group == "ground" else "band_" + group))
+    for group in (*BANDS, *GROUNDS):
+        coll = bpy.data.collections.get(PREFIX + (group if group in GROUNDS else "band_" + group))
         if coll is None or not coll.all_objects:
             continue
         style = bpy.data.linestyles.new(f"NB_style_{group}")
-        style.color = (0, 0, 0)
+        # A ground's joints are thin and grey (a floor's boards, a lot's paving), as a background artist draws them.
+        style.color = GROUND_LINE if group in GROUNDS else (0, 0, 0)
         style.thickness = max(0.75, thickness * LINE_SCALE[group])
         style.thickness_position = "CENTER"
         # Strokes shorter than a few line widths are specks (a crease on a small facet), not lines a pen would draw.

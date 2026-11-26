@@ -552,6 +552,23 @@ def _hidden(name: str, hide) -> bool:
     return any(name == h or name.startswith(h) for h in hide or [])
 
 
+#: On a ベタ thing (a black van) the pen draws its folds sharper than this (degrees) in white: its windows' frames, its
+#: roof's edge, its doors' seams; a box's corners alone would leave a black lump.
+SHARP_ON_BETA_DEG = 35.0
+
+
+def mark_sharp(obj) -> None:
+    """The edges of a mesh folded sharper than SHARP_ON_BETA_DEG marked to be drawn (Freestyle's edge marks)."""
+    mesh = obj.data
+    bm = bmesh.new()
+    bm.from_mesh(mesh)
+    limit = math.radians(SHARP_ON_BETA_DEG)
+    sharp = [e.is_boundary or (len(e.link_faces) == 2 and e.calc_face_angle(0.0) > limit) for e in bm.edges]
+    bm.free()
+    attr = mesh.attributes.get("freestyle_edge") or mesh.attributes.new("freestyle_edge", "BOOLEAN", "EDGE")
+    attr.data.foreach_set("value", sharp)
+
+
 def mark_foliage(obj, faces=None) -> None:
     """The faces of a crown or a bush marked (all, or those `faces` says): they give no lines inside, only their
     outline (render.py)."""
@@ -561,23 +578,50 @@ def mark_foliage(obj, faces=None) -> None:
     obj["nb_foliage"] = True
 
 
-#: A material darker than this (its base colour's brightness, 0…1 as shown) is drawn as ベタ.
-DARK_PAINT = 0.12
+#: A material darker than this (its colour's brightness, 0…1 as shown on the screen) is drawn as ベタ: a black van's
+#: paint is about 0.03 in light, 0.19 shown.
+DARK_PAINT = 0.25
 
 
 def _brightness(mat) -> float:
-    """How bright a material's base colour shows (the Principled BSDF's Base Color, else its viewport colour)."""
-    colour = None
+    """How bright a material's colour shows: the darker of its Principled BSDF's Base Color and its viewport colour
+    (a .blend drawn with an emission shader keeps its real colour only in the viewport's)."""
+    colours = [mat.diffuse_color]
     if mat.use_nodes and mat.node_tree:
         for node in mat.node_tree.nodes:
             if node.type == "BSDF_PRINCIPLED" and not node.inputs["Base Color"].is_linked:
-                colour = node.inputs["Base Color"].default_value
-                break
-    if colour is None:
-        colour = mat.diffuse_color
-    r, g, b = colour[0], colour[1], colour[2]
-    linear = 0.2126 * r + 0.7152 * g + 0.0722 * b
-    return 12.92 * linear if linear <= 0.0031308 else 1.055 * linear ** (1 / 2.4) - 0.055
+                colours.append(node.inputs["Base Color"].default_value)
+    shown = []
+    for c in colours:
+        linear = 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]
+        shown.append(12.92 * linear if linear <= 0.0031308 else 1.055 * linear ** (1 / 2.4) - 0.055)
+    return min(shown)
+
+
+#: A thing counts as a ground (a lot, a lawn, a terrace) when its faces looking up cover at least FLAT_AREA m² and
+#: at least FLAT_SHARE of the ground it stands on, and it is at most FLAT_HEIGHT m high (its edges, banks and steps
+#: included; a house with its floors and roof is not a ground).
+FLAT_HEIGHT = 2.0
+FLAT_AREA = 12.0
+FLAT_SHARE = 0.5
+#: …and its top at most this far above the place's lowest surface (a ground lies low; a flat roof is not one).
+GROUND_RISE = 3.0
+FLAT = "白地"
+#: What a flat surface keeps: ベタ, glass and water are not ground.
+KEEP_ON_FLAT = ("黒い塗装", "ガラス", "水")
+
+
+def _flat_and_large(obj, lowest: float) -> bool:
+    mw = obj.matrix_world
+    points = [mw @ Vector(c) for c in obj.bound_box]
+    xs, ys, zs = ([p[i] for p in points] for i in range(3))
+    footprint = (max(xs) - min(xs)) * (max(ys) - min(ys))
+    if max(zs) - min(zs) > FLAT_HEIGHT or max(zs) > lowest + GROUND_RISE or footprint < FLAT_AREA:
+        return False
+    turn = mw.to_3x3().inverted_safe().transposed()
+    scale = abs(mw.to_scale().x * mw.to_scale().y)
+    up = sum(p.area * scale for p in obj.data.polygons if (turn @ p.normal).normalized().z > 0.9)
+    return up >= FLAT_AREA and up >= FLAT_SHARE * footprint
 
 
 def add_place(place: dict):
@@ -623,9 +667,9 @@ def add_place(place: dict):
         if o.hide_render:
             for c in list(o.users_collection):
                 c.objects.unlink(o)
-    for o in coll.all_objects:
-        if o.type != "MESH":
-            continue
+    meshes = [o for o in coll.all_objects if o.type == "MESH"]
+    lowest = min((min((o.matrix_world @ Vector(c)).z for c in o.bound_box) for o in meshes), default=0.0)
+    for o in meshes:
         slots = [s.material for s in o.material_slots] or [None]
         # The object's own name and its material's first, then its collections' (H_plants, 植栽…) as a fallback; a
         # paint the modeller made very dark is ベタ whatever its name (a black van's body).
@@ -639,7 +683,18 @@ def add_place(place: dict):
             if mat is not None and g not in ("ガラス",) and _brightness(mat) < DARK_PAINT:
                 g = "黒い塗装"
             guessed.append(g)
+        # A large flat surface (a lot's ground, a lawn, a terrace, a flat roof) stays white as a manga leaves it, its
+        # shadows toned: a whole ground in grey weighs the picture down.
+        if _flat_and_large(o, lowest):
+            guessed = [g if g in KEEP_ON_FLAT else FLAT for g in guessed]
+            # Its joints drawn as a ground's lines (thin, grey: render.py), in a collection of their own.
+            for c in list(o.users_collection):
+                c.objects.unlink(o)
+            collection("flat").objects.link(o)
+            o["nb_ground"] = True
         o["nb_place_materials"] = guessed
+        if any(g == "黒い塗装" for g in guessed):
+            mark_sharp(o)
         leafy = [g in FOLIAGE for g in guessed]
         text = " ".join([o.name] + [m.name for m in slots if m]).lower()
         if any(w in text for w in FINE_WORDS):
@@ -667,7 +722,8 @@ def build(plan: dict) -> dict:
         measured["edges"].append(add_ground(plan["ground"]))
     if plan.get("place"):
         coll = add_place(plan["place"])
-        measured["place"] = [o for o in coll.all_objects if o.type == "MESH"]
+        flat = bpy.data.collections.get(PREFIX + "flat")
+        measured["place"] = [o for o in coll.all_objects if o.type == "MESH"] + (list(flat.objects) if flat else [])
         measured["edges"] += measured["place"]
     if plan.get("room"):
         room = add_room(plan["room"])
