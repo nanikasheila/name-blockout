@@ -30,7 +30,7 @@ BAND_LABELS = {"near": "近景", "middle": "中景", "far": "遠景"}
 NEAR_M = 25.0
 FAR_M = 250.0
 #: Line widths and tones by band (× the near ones; the tones are made lighter by this much).
-LINE_SCALE = {"near": 1.0, "middle": 0.75, "far": 0.55, "ground": 0.5}
+LINE_SCALE = {"near": 1.0, "middle": 0.75, "far": 0.55, "ground": 0.5, "flat": 0.5}
 TONE_LIFT = {"near": 0.0, "middle": 0.08, "far": 0.18}
 
 DEFAULTS = {

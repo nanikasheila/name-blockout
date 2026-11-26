@@ -388,6 +388,10 @@ def test_develop_in_a_place(tmp_path):
     assert bpy.data.objects["Floor"]["nb_place_materials"] == ["白地"]
     assert bpy.data.objects["site_ground"]["nb_place_materials"] == ["白地"] and not bpy.data.objects["site_ground"].get("nb_foliage")
     assert bpy.data.objects["Shell"]["nb_place_materials"] == ["白壁"]
+    # A ground's lines are a ground's (thin, grey); a ベタ thing's folds are drawn (white over it).
+    assert bpy.data.objects["site_ground"].users_collection[0].name == "NB_flat"
+    assert "NB_lines_flat" in [ls.name for ls in bpy.context.view_layer.freestyle_settings.linesets]
+    assert all(v.value for v in van.data.attributes["freestyle_edge"].data)
     assert "NB_lines_near_foliage" in [ls.name for ls in bpy.context.view_layer.freestyle_settings.linesets]
 
     shot["look"] = {"setting": "indoor", "light": {"key": "interior"}}
