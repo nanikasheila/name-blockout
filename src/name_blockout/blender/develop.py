@@ -92,6 +92,8 @@ CELL_M = 0.16
 CELL_JOINT = 0.1
 CELL_DARKER = 0.25
 CELL_MIN_PX = 7.0
+#: A joint between cells: nearly white (a tone's density).
+CELL_JOINT_TONE = 0.08
 
 
 def _cells(name: str, grey: float, joint: float, axes: tuple[int, int], size: tuple[float, float], start=(0.0, 0.0)):
@@ -141,11 +143,19 @@ def _cells(name: str, grey: float, joint: float, axes: tuple[int, int], size: tu
     return mat
 
 
-def cell_grid(obj, scene):
-    """The panel's two long axes (its mesh's), a cell's size along them in the mesh's units (cells grouped by twos
-    until one shows at least CELL_MIN_PX, the panel split evenly) and its corner; None if it has no face to speak of."""
-    lo = [min(c[i] for c in obj.bound_box) for i in range(3)]
-    hi = [max(c[i] for c in obj.bound_box) for i in range(3)]
+def cell_grid(obj, scene, slot: int | None = None):
+    """The panel's two long axes (its mesh's; the faces of material `slot` only, if given), a cell's size along them
+    in the mesh's units (cells grouped by twos until one shows at least CELL_MIN_PX, the panel split evenly) and its
+    corner; None if it has no face to speak of."""
+    mesh = obj.data
+    if slot is None:
+        points = [tuple(c) for c in obj.bound_box]
+    else:
+        points = [tuple(mesh.vertices[v].co) for f in mesh.polygons if f.material_index == slot for v in f.vertices]
+    if not points:
+        return None
+    lo = [min(c[i] for c in points) for i in range(3)]
+    hi = [max(c[i] for c in points) for i in range(3)]
     scale = obj.matrix_world.to_scale()
     extent = [(hi[i] - lo[i]) * abs(scale[i]) for i in range(3)]
     axes = tuple(sorted(sorted(range(3), key=lambda i: -extent[i])[:2]))
@@ -233,13 +243,16 @@ def _render(path: Path, samples: int, transparent: bool = True, exact: bool = Fa
     scene.render.use_freestyle = False
     scene.render.filepath = str(path)
     settings = scene.render.image_settings
-    keep = (settings.file_format, settings.color_depth)
+    keep = (settings.file_format, settings.color_depth, scene.cycles.use_denoising, scene.cycles.filter_width)
     if exact:
+        # Values to read (a height, an object's number): no denoiser or wide pixel filter mixing two surfaces'.
         settings.file_format = "OPEN_EXR"
         settings.color_depth = "32"
+        scene.cycles.use_denoising = False
+        scene.cycles.filter_width = 0.01
     bpy.ops.render.render(write_still=True)
     if exact:
-        settings.file_format, settings.color_depth = keep
+        settings.file_format, settings.color_depth, scene.cycles.use_denoising, scene.cycles.filter_width = keep
     image = bpy.data.images.load(str(path), check_existing=False)
     w, h = image.size
     pixels = np.empty(w * h * 4, dtype=np.float32)
@@ -301,11 +314,17 @@ def _set_materials(built: dict, plan: dict, which: str, ground) -> None:
             name = guessed[i] if i < len(guessed) else DEFAULT
             m = materials.get(_part_name(obj.name)) or LIBRARY.get(name, LIBRARY[DEFAULT]).as_dict()
             slot.link = "OBJECT"
-            # A solar panel: its cells' grid in the tone (too fine for the pen at a name's size).
-            grid = cell_grid(obj, bpy.context.scene) if obj.get("nb_cells") and not m["beta"] else None
+            # A solar panel: dark cells with light joints between them, as a manga draws one (too fine for the pen).
+            # Where the model's faces are the cells, the joints go between them on the picture (cell_gaps);
+            # where a panel is one face, a grid is laid over it.
+            cells = i in (obj.get("nb_cell_slots") or []) and not m["beta"]
+            dark = _linear(max(0.0, 1.0 - m[which] - CELL_DARKER))
+            grid = cell_grid(obj, bpy.context.scene, i) if cells and not obj.get("nb_cell_faces") else None
             if grid:
-                joint = _linear(max(0.0, 1.0 - m[which] - CELL_DARKER))
-                slot.material = _cells(f"dev_cells_{obj.name}_{i}_{which}", grey(m), joint, *grid)
+                light = _linear(1.0 - CELL_JOINT_TONE)
+                slot.material = _cells(f"dev_cells_{obj.name}_{i}_{which}", dark, light, *grid)
+            elif cells:
+                slot.material = _emission(f"dev_cell_faces_{m['name']}_{which}", dark)
             else:
                 slot.material = _emission(f"dev_lib_{m['name']}_{which}", grey(m))
     walls = materials.get("walls")
@@ -419,10 +438,22 @@ def develop_passes(plan: dict, built: dict, out_dir: Path, samples: int = 16) ->
     mark_crowns(built)
     layer.material_override = _crowns()
     crowns = _render(out_dir / "_crowns.exr", 1, exact=True)
+    # …and which solar cell (a face of the model) each pixel shows: light joints between them.
+    cell_ids = None
+    if any(o.get("nb_cell_faces") for o in built.get("place", [])):
+        layer.material_override = _face_value("nb_cell")
+        cell_ids = _render(out_dir / "_cells.exr", 1, exact=True)[..., 0]
     layer.material_override = None
 
     # 3. Put together; at dawn, dusk and night the sky is toned too.
     tone = np.where(shadow[..., None], shadow_tones, lit_tones)
+    if cell_ids is not None:
+        gaps = cell_gaps(cell_ids, CELL_MIN_PX)
+        # A joint as wide as a fine pen's line, kept inside the panel.
+        r = max(0, round(inner_px(plan["render"]["dpi"]) / 2 - 1))
+        if r:
+            gaps = grow(gaps, r) & (cell_ids > 0.05)
+        tone[gaps, :3] = 1.0 - CELL_JOINT_TONE
     sky = SKY_TONES.get(word)
     if sky:
         g = 1.0 - sky
@@ -444,7 +475,7 @@ def develop_passes(plan: dict, built: dict, out_dir: Path, samples: int = 16) ->
         _save(files["線画"], lines)
     files["完成"] = _save(out_dir / "完成.png", _over(white_on_beta(lines, tone, reach), _over(tone, white)))
     check = shadow_check(plan, built, shadow, lit, sun)
-    for name in ("_lit.png", "_shadow.png", "_up.png", "_height.exr", "_crowns.exr"):
+    for name in ("_lit.png", "_shadow.png", "_up.png", "_height.exr", "_crowns.exr", "_cells.exr"):
         (out_dir / name).unlink(missing_ok=True)
     if grid is not None:
         grid.hide_render = False
@@ -491,7 +522,7 @@ def split_above(obj, z: float):
         bm.free()
     piece = bpy.data.objects.new(obj.name + "_above", top)
     piece.matrix_world = mw.copy()
-    for k in ("nb_place_materials", "nb_foliage", "nb_cells"):
+    for k in ("nb_place_materials", "nb_foliage", "nb_cell_slots", "nb_cell_faces"):
         if k in obj:
             piece[k] = obj[k]
     for coll in obj.users_collection:
@@ -562,6 +593,40 @@ def mark_crowns(built: dict) -> None:
         while root.parent is not None:
             root = root.parent
         o["nb_crown"] = number("object:" + root.name)
+
+
+def _face_value(name: str):
+    """A material showing a face attribute's value (to be read back exactly)."""
+    mat = bpy.data.materials.get(PREFIX + "face_" + name) or bpy.data.materials.new(PREFIX + "face_" + name)
+    mat.use_nodes = True
+    nodes, links = mat.node_tree.nodes, mat.node_tree.links
+    nodes.clear()
+    out = nodes.new("ShaderNodeOutputMaterial")
+    attr = nodes.new("ShaderNodeAttribute")
+    attr.attribute_type = "GEOMETRY"
+    attr.attribute_name = name
+    emit = nodes.new("ShaderNodeEmission")
+    links.new(attr.outputs["Fac"], emit.inputs["Strength"])
+    emit.inputs["Color"].default_value = (1.0, 1.0, 1.0, 1.0)
+    links.new(emit.outputs[0], out.inputs[0])
+    return mat
+
+
+def cell_gaps(ids: np.ndarray, min_px: float) -> np.ndarray:
+    """The pixels between two cells (two faces with different ids, both cells: a panel's edge against the roof is
+    its outline, drawn by the pen); none if the cells show smaller than `min_px` on average (they would be a blur)."""
+    cell = ids > 0.05
+    h, w = ids.shape
+    gap = np.zeros((h, w), dtype=bool)
+    for dy, dx in ((0, 1), (1, 0)):
+        a = (slice(0, h - dy), slice(0, w - dx))
+        b = (slice(dy, h), slice(dx, w))
+        differ = cell[a] & cell[b] & (np.abs(ids[a] - ids[b]) > 1e-4)
+        gap[a] |= differ
+    n = len(np.unique(np.round(ids[cell], 4)))
+    if n == 0 or math.sqrt(cell.sum() / n) < min_px:
+        return np.zeros((h, w), dtype=bool)
+    return gap
 
 
 def _focal_px(scene) -> float:

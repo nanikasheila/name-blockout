@@ -331,6 +331,22 @@ def _house_blend(folder: Path) -> None:
     shell.from_pydata([(-6, 14, 0), (6, 14, 0), (6, 14, 2.6), (-6, 14, 2.6), (-6, 2, 2.6), (6, 2, 2.6)], [], [(0, 1, 2, 3), (3, 2, 5, 4)])
     shell.materials.append(bpy.data.materials.new("Plaster"))
     coll.objects.link(bpy.data.objects.new("Shell", shell))
+    # A roof kit: a parapet and a solar array modelled cell by cell (4 × 6 faces of 0.16 m) in one mesh.
+    kit = bpy.data.meshes.new("Roof_kit")
+    verts, faces, mats = [(4, 0, 3.0), (5, 0, 3.0), (5, 0, 3.4), (4, 0, 3.4)], [(0, 1, 2, 3)], [0]
+    for i in range(4):
+        for j in range(6):
+            k = len(verts)
+            x, y = 4 + i * 0.16, 1 + j * 0.16
+            verts += [(x, y, 3.7), (x + 0.16, y, 3.7), (x + 0.16, y + 0.16, 3.7), (x, y + 0.16, 3.7)]
+            faces.append((k, k + 1, k + 2, k + 3))
+            mats.append(1)
+    kit.from_pydata(verts, [], faces)
+    kit.materials.append(bpy.data.materials.new("Parapet"))
+    kit.materials.append(bpy.data.materials.new("solar"))
+    for poly, m in zip(kit.polygons, mats):
+        poly.material_index = m
+    coll.objects.link(bpy.data.objects.new("Roof_kit", kit))
     lamp = bpy.data.objects.new("SUN", bpy.data.lights.new("SUN", "SUN"))
     coll.objects.link(lamp)
     folder.mkdir(parents=True, exist_ok=True)
@@ -386,7 +402,15 @@ def test_develop_in_a_place(tmp_path):
     assert bpy.data.objects["Solar_panel"].get("nb_foliage")
     # …its cells a grid in its tone.
     panel = bpy.data.objects["Solar_panel"]
-    assert panel.get("nb_cells") and panel.material_slots[0].material.name.startswith("NB_dev_cells_"), panel.material_slots[0].material
+    assert list(panel["nb_cell_slots"]) == [0] and not panel.get("nb_cell_faces")
+    assert panel.material_slots[0].material.name.startswith("NB_dev_cells_"), panel.material_slots[0].material
+    # A roof kit whose solar slot's faces are the cells: only that slot is dark, the joints come from its faces.
+    kit = bpy.data.objects["Roof_kit"]
+    assert list(kit["nb_cell_slots"]) == [1] and kit.get("nb_cell_faces")
+    assert kit.material_slots[1].material.name.startswith("NB_dev_cell_faces_")
+    assert not kit.material_slots[0].material.name.startswith("NB_dev_cell")
+    marks = [v.value for v in kit.data.attributes["freestyle_face"].data]
+    assert not marks[0] and all(marks[1:])  # the parapet keeps its lines, the cells are outline only
     # A large flat lawn is ground: white, not the grass's grey.
     assert bpy.data.objects["Floor"]["nb_place_materials"] == ["白地"]
     assert bpy.data.objects["site_ground"]["nb_place_materials"] == ["白地"] and not bpy.data.objects["site_ground"].get("nb_foliage")
@@ -483,6 +507,22 @@ def test_crown_outlines_unbroken_on_the_front_crown():
     assert ink[30, 69]  # the back crown's edge against the sky
     assert not ink[30, 30] and not ink[30, 55]  # inside the crowns
     assert not ink[30, 46 + 2]  # on the back crown, just past the front one: its line is on the front's side
+
+
+@needs_blender
+def test_cell_gaps_between_faces_not_at_the_panel_edge():
+    import numpy as np
+
+    from name_blockout.blender.develop import cell_gaps
+
+    ids = np.zeros((40, 40), dtype=np.float32)
+    for i in range(4):
+        for j in range(4):
+            ids[5 + i * 8 : 13 + i * 8, 5 + j * 8 : 13 + j * 8] = 0.1 + 0.05 * (i * 4 + j)
+    gaps = cell_gaps(ids, 4.0)
+    assert gaps[12, 8] and gaps[8, 12]  # between two cells
+    assert not gaps[4, 8] and not gaps[8, 8]  # the panel's edge, a cell's middle
+    assert not cell_gaps(ids, 20.0).any()  # cells too small to show their joints
 
 
 @needs_blender
