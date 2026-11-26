@@ -133,7 +133,7 @@ def mountains(camera: Camera, layer: dict, span: tuple[float, float]) -> dict:
 
 
 def trees(camera: Camera, layer: dict, span: tuple[float, float]) -> dict:
-    """A row of tree shapes (cones on a short trunk) along the arc, in clumps."""
+    """A row of trees along the arc, in clumps: most broadleaf (a crown of lumps), a few conifers (cones)."""
     rng = random.Random(layer.get("seed", 0))
     d, (lo, hi) = _range(layer, "trees")
     out = []
@@ -145,7 +145,16 @@ def trees(camera: Camera, layer: dict, span: tuple[float, float]) -> dict:
             radius = height * rng.uniform(0.22, 0.35)
             dist = d * rng.uniform(0.92, 1.12)
             x, y = _at(camera, a, dist)
-            out.append({"centreM": [round(x, 3), round(y, 3), 0.0], "heightM": round(height, 2), "radiusM": round(radius, 2)})
+            form = "conifer" if rng.random() < layer.get("conifers", 0.2) else "broad"
+            out.append(
+                {
+                    "centreM": [round(x, 3), round(y, 3), 0.0],
+                    "heightM": round(height, 2),
+                    "radiusM": round(radius * (1.0 if form == "conifer" else 1.3), 2),
+                    "form": form,
+                    "seed": rng.randrange(1 << 16),
+                }
+            )
             a += math.degrees(radius * rng.uniform(0.9, 1.6) / dist)
         a += math.degrees(rng.uniform(4.0, 30.0) / d)
     return {"kind": "trees", "distanceM": d, "trees": out[:MAX_PIECES]}

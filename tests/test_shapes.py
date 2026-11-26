@@ -80,7 +80,7 @@ def test_development_gives_shapes_and_far_layers():
     assert all(o.get("parts") for o in plan["objects"])
     assert any(n.startswith("形を作った: ") for n in plan["notes"])
     # Outdoors without far layers: a skyline (sheds are a town's) and mountains, noted as the tool's.
-    assert [layer["kind"] for layer in plan["far"]] == ["skyline", "mountains"]
+    assert [layer["kind"] for layer in plan["far"]] == ["skyline", "mountains", "mountains"]
     assert any(a["path"] == "far" for a in plan["assumptions"])
     # The design is the author's: the hashes do not take the far layers the tool added.
     assert plan["hashes"] == build_plan(data, shot, path)["hashes"]

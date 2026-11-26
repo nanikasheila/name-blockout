@@ -58,6 +58,9 @@ FACE_LIT = 0.3
 FACE_AWAY = -0.02
 #: A light higher than this (degrees) is overhead: the ground beside a thing is not checked, its shadow is at its foot.
 OVERHEAD_DEG = 70.0
+#: Under the ceiling's light, a place's faces this high above the floor under the camera (m) are the ceiling (and
+#: what is over it): they let the light through.
+CEILING_OVER_FLOOR = 2.0
 
 
 def _emission(name: str, grey: float):
@@ -240,12 +243,19 @@ def develop_passes(plan: dict, built: dict, out_dir: Path, samples: int = 16) ->
 
     # Indoors under the ceiling's light, a place's ceilings and roofs (all above the eye) let it through: the light
     # stands for the lamps in the room, not a sun over the house.
+    # A ceiling is often one mesh with its walls: its faces above the eye are split off to let the light through.
     if light.get("key") == "interior":
-        eye = plan["camera"].get("positionM", [0, 0, 1.5])[2]
-        for obj in built.get("place", []):
-            if min((obj.matrix_world @ Vector(c)).z for c in obj.bound_box) > eye:
-                obj.visible_shadow = False
-                obj["nb_noshadow"] = True
+        cut = ceiling_cut(scene, plan["camera"].get("positionM", [0, 0, 1.5]))
+        for obj in list(built.get("place", [])):
+            if min((obj.matrix_world @ Vector(c)).z for c in obj.bound_box) > cut:
+                above = obj
+            else:
+                above = split_above(obj, cut)
+                if above is None:
+                    continue
+                built["place"].append(above)
+            above.visible_shadow = False
+            above["nb_noshadow"] = True
 
     # 1. 光: white and matte, the sun alone (the sky black), as strong as π so a face square to it is exactly 1.
     # A wide light (a soft shadow) needs more samples, and the denoiser, or its shadow's edge comes out grainy.
@@ -305,6 +315,46 @@ def develop_passes(plan: dict, built: dict, out_dir: Path, samples: int = 16) ->
     if grid is not None:
         grid.hide_render = False
     return files, check
+
+
+def ceiling_cut(scene, camera_at) -> float:
+    """The height over which a room's faces count as its ceiling: the floor under the camera + CEILING_OVER_FLOOR."""
+    depsgraph = bpy.context.evaluated_depsgraph_get()
+    hit, location, *_ = scene.ray_cast(depsgraph, Vector(camera_at), Vector((0, 0, -1)), distance=50.0)
+    floor = location.z if hit else 0.0
+    return floor + CEILING_OVER_FLOOR
+
+
+def split_above(obj, z: float):
+    """The faces of a mesh lying wholly above height `z` (in the world), moved to an object of their own (same
+    materials, same place's materials); None when there are none or the mesh is all above."""
+    import bmesh
+
+    mw = obj.matrix_world
+    mesh = obj.data
+    above = [p.index for p in mesh.polygons if all((mw @ mesh.vertices[v].co).z > z for v in p.vertices)]
+    if not above or len(above) == len(mesh.polygons):
+        return None
+    if mesh.users > 1:
+        obj.data = mesh = mesh.copy()
+    top = mesh.copy()
+    keep = set(above)
+    for target, wanted in ((mesh, lambda i: i not in keep), (top, lambda i: i in keep)):
+        bm = bmesh.new()
+        bm.from_mesh(target)
+        bm.faces.ensure_lookup_table()
+        gone = [f for f in bm.faces if not wanted(f.index)]
+        bmesh.ops.delete(bm, geom=gone, context="FACES")
+        bm.to_mesh(target)
+        bm.free()
+    piece = bpy.data.objects.new(obj.name + "_above", top)
+    piece.matrix_world = mw.copy()
+    for k in ("nb_place_materials", "nb_foliage"):
+        if k in obj:
+            piece[k] = obj[k]
+    for coll in obj.users_collection:
+        coll.objects.link(piece)
+    return piece
 
 
 def white_on_beta(lines: np.ndarray, tone: np.ndarray) -> np.ndarray:
