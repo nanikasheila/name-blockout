@@ -35,6 +35,7 @@ import bpy
 import numpy as np
 from mathutils import Vector
 
+from ..materials import LIBRARY
 from .render import render_passes
 from .scene import PREFIX, collection
 
@@ -183,6 +184,10 @@ def _set_materials(built: dict, plan: dict, which: str, ground) -> None:
             # A part of a 素材 the author gave its own material (look.materials by the part's name).
             part = materials.get(_part_name(obj.get("nb_part", "")))
             own = _emission(f"dev_part_{_part_name(obj['nb_part'])}_{which}", grey(part)) if part and part.get("part") else None
+            # A part of a shape the tool made carries its own material (glass, tyres…), unless the author named one.
+            made = LIBRARY.get(obj.get("nb_material", ""))
+            if own is None and made is not None:
+                own = _emission(f"dev_lib_{made.name}_{which}", grey(made.as_dict()))
             obj.data.materials.clear()
             obj.data.materials.append(own or mat)
     walls = materials.get("walls")

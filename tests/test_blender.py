@@ -121,7 +121,8 @@ def test_develop_example(tmp_path):
     shadow = np.array(shown, dtype=bool).reshape(fh, fw)[::-1]
     assert shadow_check(plan, None, shadow, None, sun=True)["pass"]
     assert not shadow_check(plan, None, ~shadow, None, sun=True)["pass"]
-    assert set(r["files"]) == {"完成", "線画", "トーン", "影"}
+    # Outdoors without far layers asked for, the development adds them (and draws 遠景 on its own).
+    assert set(r["files"]) == {"完成", "線画", "トーン", "影", "遠景"}
     assert r["note"].startswith("開発（光と材質、name-blockout）: 午後・晴れ・日差しは")
     shade = bpy.data.images.load(str(tmp_path / "案" / "panel1" / "1" / "影.png"))
     alpha = shade.pixels[3::4]
@@ -261,6 +262,10 @@ def test_develop_draws_a_thing_as_its_asset(tmp_path):
     assert "素材に差し替え: 椅子（椅子）" in plan["notes"]
     assert "素材に差し替え: 椅子（椅子）" in r["note"]
     bpy.ops.wm.open_mainfile(filepath=str(tmp_path / "blockout" / "panel1" / "2" / "scene.blend"))
+    # Things without a 素材 get the tool's detailed shapes: the sofa its cushions, the shelf its books.
+    sofa = [o for o in bpy.data.objects["NB_thing_o1"].children if o.get("nb_part") == "座面のクッション"]
+    books = [o for o in bpy.data.objects["NB_thing_o3"].children if o.get("nb_part") == "本"]
+    assert sofa and len(books) > 20 and books[0]["nb_material"] == "布"
     holder = bpy.data.objects["NB_thing_o2"]
     seat = next(o for o in holder.children if o.name.startswith("座面"))
     back = next(o for o in holder.children if o.name.startswith("背もたれ"))

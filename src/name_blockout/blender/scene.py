@@ -444,6 +444,63 @@ def add_thing(obj: dict, camera_at, coll):
     return meshes
 
 
+def _part_mesh(part: dict) -> bmesh.types.BMesh:
+    """One part of a shape (shapes.py) as a mesh in the thing's own frame."""
+    bm = bmesh.new()
+    sx, sy, sz = part["s"]
+    kind = part.get("shape", "box")
+    if kind == "cylinder":
+        bmesh.ops.create_cone(bm, cap_ends=True, segments=24, radius1=0.5, radius2=0.5, depth=1.0)
+        turn = {"X": Matrix.Rotation(math.pi / 2, 4, "Y"), "Y": Matrix.Rotation(math.pi / 2, 4, "X")}.get(part.get("axis", "Z"))
+        if turn is not None:
+            bmesh.ops.transform(bm, matrix=turn, verts=bm.verts)
+    elif kind == "sphere":
+        bmesh.ops.create_icosphere(bm, subdivisions=2, radius=0.5)
+    elif kind == "prism":
+        # A gable: its ridge along Y (or X), the triangle's base the part's bottom.
+        verts = [
+            bm.verts.new(v)
+            for v in ((-0.5, -0.5, -0.5), (0.5, -0.5, -0.5), (0.0, -0.5, 0.5), (-0.5, 0.5, -0.5), (0.5, 0.5, -0.5), (0.0, 0.5, 0.5))
+        ]
+        a0, a1, a2, b0, b1, b2 = verts
+        for face in ((a0, a2, a1), (b0, b1, b2), (a0, a1, b1, b0), (a1, a2, b2, b1), (a2, a0, b0, b2)):
+            bm.faces.new(face)
+        if part.get("ridge") == "X":
+            bmesh.ops.transform(bm, matrix=Matrix.Rotation(math.pi / 2, 4, "Z"), verts=bm.verts)
+            sx, sy = sx, sy
+    else:
+        bmesh.ops.create_cube(bm, size=1.0)
+    bmesh.ops.scale(bm, vec=(sx, sy, sz), verts=bm.verts)
+    bmesh.ops.translate(bm, vec=tuple(part["c"]), verts=bm.verts)
+    bmesh.ops.recalc_face_normals(bm, faces=bm.faces)
+    return bm
+
+
+def add_shape(obj: dict, camera_at, coll, material):
+    """A thing's detailed shape (plan's parts) in place of its box: its front (−Y) toward the camera, turned with the
+    box, standing on the box's bottom. Returns its parts' objects (each named and given its material as made)."""
+    p = obj["placed"]
+    turn = 0.0 if p["along"] == "X" else math.pi / 2
+    centre = Vector(p["centreM"])
+    front = Matrix.Rotation(turn, 3, "Z") @ Vector((0, -1, 0))
+    if front.dot(Vector((camera_at[0] - centre.x, camera_at[1] - centre.y, 0.0))) < 0:
+        turn += math.pi
+    holder = bpy.data.objects.new(PREFIX + "thing_" + obj["id"], None)
+    coll.objects.link(holder)
+    holder.matrix_world = Matrix.Translation(centre) @ Matrix.Rotation(turn, 4, "Z")
+    out = []
+    for i, part in enumerate(obj["parts"]):
+        piece = _mesh_object(f"{part['name']}.{obj['id']}.{i:03d}", _part_mesh(part), coll, material)
+        piece.parent = holder
+        piece.matrix_parent_inverse = Matrix.Identity(4)
+        piece["nb_label"] = obj["label"]
+        piece["nb_part"] = part["name"]
+        if part.get("material"):
+            piece["nb_material"] = part["material"]
+        out.append(piece)
+    return out
+
+
 def add_place(place: dict):
     """The place's collection from its .blend (appended, so the scene is whole on its own)."""
     path = Path(place["file"])
@@ -504,6 +561,13 @@ def build(plan: dict) -> dict:
                         part.data.materials.append(material)
                 measured["objects"][obj["id"]] = parts
                 continue
+        if plan.get("detail") and obj.get("parts"):
+            parts = add_shape(obj, plan["camera"]["positionM"], band_collection(band), material)
+            for part in parts:
+                part["nb_band"] = band
+            measured["objects"][obj["id"]] = parts
+            measured["edges"] += parts
+            continue
         box = add_box(PREFIX + "obj_" + obj["id"], p["centreM"], p["sizeM"], p["along"], band_collection(band), material)
         box["nb_label"] = obj["label"]
         box["nb_band"] = band
