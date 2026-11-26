@@ -162,3 +162,24 @@ def test_a_room_s_deepest_boundary_is_as_thick_as_a_lot_s():
     assert depth[10, 40] > 0.9
     depth, _, deepest = boundary_depths(z * 1000, thing)
     assert deepest == 250.0 and depth[10, 40] < 0.01
+
+
+def test_a_far_horizon_is_no_line_but_a_near_top_against_the_sky_is():
+    """Where level ground ends against the sky beyond the foreground no line is drawn; a near thing's level top
+    (a van's roof) against the sky keeps its outline, and so does the far ground's edge before a thing."""
+    h, w = 60, 90
+    thing = np.zeros((h, w), dtype=bool)
+    z = np.full((h, w), 1.0, dtype=np.float32)
+    normal = np.zeros((h, w, 3), dtype=np.float32)
+    normal[..., 2] = 1.0  # all level
+    for x0, metres in ((5, 4.0), (35, 40.0), (65, 40.0)):
+        thing[20:50, x0 : x0 + 20] = True
+        z[20:50, x0 : x0 + 20] = metres
+    # Behind the third: a thing still farther (a hill).
+    thing[10:20, 65:85] = True
+    z[10:20, 65:85] = 200.0
+    normal[10:20, 65:85] = (0.0, -1.0, 0.0)
+    depth, *_ = boundary_depths(z, thing, normal, None, d_ref=4.0, deepest=40.0)
+    assert depth[20, 15] > 0.9  # the near top against the sky
+    assert depth[20, 45] == 0  # the far ground's end against the sky: a horizon
+    assert depth[20, 75] > 0  # the far ground's end before the hill

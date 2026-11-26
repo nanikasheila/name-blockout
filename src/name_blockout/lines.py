@@ -54,6 +54,8 @@ D_REF_PERCENTILE = 5.0
 DEEPEST_PERCENTILE = 95.0
 #: Beyond this many foregrounds off a boundary counts less: × (FADE_FROM × foreground / distance).
 FADE_FROM = 2.0
+#: A surface whose normal's height is over this is level (ground, a floor, a flat roof's top).
+LEVEL_NORMAL = 0.9
 #: Width = W_MAX × depth^GAMMA (the square root: a boundary a quarter as deep gets half the width, so the middle
 #: depths keep some weight, as a pen's three or four sizes).
 GAMMA = 0.5
@@ -127,13 +129,15 @@ def boundary_depths(
     lumps, a louvre's slats)."""
     q = np.where(thing, 1.0 / np.maximum(z, 1e-3), 0.0).astype(np.float32)
     gap = np.zeros_like(q)
+    solid = np.zeros_like(q)  # the same, before things only (not before the sky)
     for dy, dx in _SHIFTS:
         behind = _shift(q, dy, dx)
         before = _shift(q, -dy, -dx)
         # A plane's 1/z runs evenly across the picture: what this pixel's surface would be one pixel on is taken
         # off, so a floor running away from the eye is no boundary.
-        jump = np.minimum(q - behind, 2 * q - before - behind)
-        gap = np.maximum(gap, np.where(thing, np.maximum(jump, 0.0), 0.0))
+        jump = np.where(thing, np.maximum(np.minimum(q - behind, 2 * q - before - behind), 0.0), 0.0)
+        gap = np.maximum(gap, jump)
+        solid = np.maximum(solid, np.where(_shift(thing, dy, dx), jump, 0.0))
     # At the picture's edge there is no pixel before to tell a surface's slope by: no boundary is marked there.
     gap[0, :] = gap[-1, :] = 0.0
     gap[:, 0] = gap[:, -1] = 0.0
@@ -141,6 +145,11 @@ def boundary_depths(
         found = scales(z, thing, gap)
         d_ref = found[0] if d_ref is None else d_ref
         deepest = found[1] if deepest is None else deepest
+    if normal is not None:
+        # Beyond the foreground, where level ground ends against the sky is a horizon, not a thing's outline: told
+        # by the white ground under the sky or the backdrop's tones, with no line.
+        horizon = thing & (normal[..., 2] > LEVEL_NORMAL) & (z > FADE_FROM * d_ref)
+        gap = np.where(horizon, solid, gap)
     depth = np.minimum(1.0, gap * deepest) * line_fade(z, thing, d_ref)
     if normal is not None:
         cos_min = math.cos(math.radians(FOLD_MIN_DEG))
@@ -229,7 +238,7 @@ def boundary_lines(
     lined = thing if flat is None else thing & ~flat
     if d_ref is None or deepest is None:
         # The picture's scales from the things that are lined (a backdrop's skyline is not its foreground).
-        found = boundary_depths(z, lined)[1:]
+        found = boundary_depths(z, lined, normal)[1:]
         d_ref = found[0] if d_ref is None else d_ref
         deepest = found[1] if deepest is None else deepest
     depth, d_ref, deepest = boundary_depths(z, thing, normal, soft, d_ref, deepest)
@@ -247,6 +256,10 @@ def boundary_lines(
     return shrink(drawn, by), info
 
 
+#: A distance band with under this share of the picture in it is left out of the reports.
+BAND_MIN_SHARE = 0.002
+
+
 def _bands() -> dict:
     return {"near": (0.0, NEAR_M), "middle": (NEAR_M, FAR_M), "far": (FAR_M, math.inf)}
 
@@ -256,8 +269,9 @@ def widths_report(mm: np.ndarray, z: np.ndarray) -> dict:
     and deep boundaries get the thick lines."""
     out = {}
     for name, (lo, hi) in _bands().items():
-        got = mm[(mm > 0) & (z >= lo) & (z < hi)]
-        out[name] = [round(float(np.percentile(got, q)), 3) for q in (50, 95)] if got.size else None
+        band = (z >= lo) & (z < hi)
+        got = mm[(mm > 0) & band]
+        out[name] = [round(float(np.percentile(got, q)), 3) for q in (50, 95)] if got.size and band.mean() >= BAND_MIN_SHARE else None
     return out
 
 
@@ -269,5 +283,6 @@ def bands_report(width: np.ndarray, black: np.ndarray, z: np.ndarray, thing: np.
     area = width * black
     for name, (lo, hi) in _bands().items():
         where = thing & (z >= lo) & (z < hi)
-        out[name] = round(float(area[where].sum() / where.sum()), 4) if where.any() else None
+        # A band with next to nothing in it (a sliver at the picture's edge) tells nothing.
+        out[name] = round(min(1.0, float(area[where].sum() / where.sum())), 4) if where.mean() >= BAND_MIN_SHARE else None
     return out
