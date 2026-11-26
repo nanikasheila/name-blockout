@@ -17,7 +17,7 @@ import bpy
 from mathutils import Matrix, Vector
 
 from ..far import BANDS, TONE_LIFT
-from ..materials import DEFAULT, FINE_WORDS, FOLIAGE, guess_part
+from ..materials import CELL_WORDS, DEFAULT, FINE_WORDS, FOLIAGE, guess_part
 
 PREFIX = "NB_"
 #: Which light the tones take (from above, in front, a little left of the camera's usual view).
@@ -576,6 +576,42 @@ def mark_sharp(obj) -> None:
     attr.data.foreach_set("value", sharp)
 
 
+#: A solar cell (m²): a slot whose faces are no larger than a few of these has its cells modelled face by face.
+CELL_AREA = 0.16 * 0.16
+
+
+def mark_cells(obj, slots) -> None:
+    """A solar panel's material slots (its or its material's name says so: nb_cell_slots). If their faces are the
+    cells (small), each face gets its own number (the face attribute nb_cell, 0.1–1) for the joints between them."""
+    import zlib
+
+    name = obj.name.lower()
+    chosen = [
+        i
+        for i, m in enumerate(slots)
+        if any(w in name for w in CELL_WORDS) or (m is not None and any(w in m.name.lower() for w in CELL_WORDS))
+    ]
+    if not chosen:
+        return
+    obj["nb_cell_slots"] = chosen
+    mesh = obj.data
+    scale = obj.matrix_world.to_scale()
+    factor = abs(scale[0] * scale[1] * scale[2]) ** (2 / 3)
+    faces = [f for f in mesh.polygons if f.material_index in chosen]
+    if not faces:
+        return
+    # Most of the panel's area in small faces: the cells are modelled (a panel of one face and thin sides is not).
+    small = sum(f.area for f in faces if f.area * factor <= 16 * CELL_AREA)
+    if small < 0.5 * sum(f.area for f in faces):
+        return
+    obj["nb_cell_faces"] = True
+    attr = mesh.attributes.get("nb_cell") or mesh.attributes.new("nb_cell", "FLOAT", "FACE")
+    for f in mesh.polygons:
+        attr.data[f.index].value = (
+            0.1 + 0.9 * (zlib.crc32(f"{obj.name}:{f.index}".encode()) % 997) / 997 if f.material_index in chosen else 0.0
+        )
+
+
 def mark_foliage(obj, faces=None) -> None:
     """The faces of a crown or a bush marked (all, or those `faces` says): they give no lines inside, only their
     outline (render.py)."""
@@ -699,9 +735,11 @@ def add_place(place: dict):
         if any(g == "黒い塗装" for g in guessed):
             mark_sharp(o)
         leafy = [g in FOLIAGE for g in guessed]
-        text = " ".join([o.name] + [m.name for m in slots if m]).lower()
-        if any(w in text for w in FINE_WORDS):
-            leafy = [True] * len(leafy)
+        # Too fine for the pen: the whole object if its name says so, else the slots whose material's name does (a
+        # roof kit's solar slot, not its parapet).
+        whole = any(w in o.name.lower() for w in FINE_WORDS)
+        leafy = [f or whole or (m is not None and any(w in m.name.lower() for w in FINE_WORDS)) for f, m in zip(leafy, slots)]
+        mark_cells(o, slots)
         if any(leafy):
             mark_foliage(o, [leafy[min(poly.material_index, len(leafy) - 1)] for poly in o.data.polygons])
     return coll
