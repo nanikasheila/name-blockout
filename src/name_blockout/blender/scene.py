@@ -581,18 +581,30 @@ def _brightness(mat) -> float:
     return min(shown)
 
 
-#: A surface at most this thick (m) and at least this large (m², from above) counts as a ground or a floor.
-FLAT_HEIGHT = 0.4
+#: A thing counts as a ground (a lot, a lawn, a terrace) when its faces looking up cover at least FLAT_AREA m² and
+#: at least FLAT_SHARE of the ground it stands on, and it is at most FLAT_HEIGHT m high (its edges, banks and steps
+#: included; a house with its floors and roof is not a ground).
+FLAT_HEIGHT = 2.0
 FLAT_AREA = 12.0
+FLAT_SHARE = 0.5
+#: …and its top at most this far above the place's lowest surface (a ground lies low; a flat roof is not one).
+GROUND_RISE = 3.0
 FLAT = "白地"
 #: What a flat surface keeps: ベタ, glass and water are not ground.
 KEEP_ON_FLAT = ("黒い塗装", "ガラス", "水")
 
 
-def _flat_and_large(obj) -> bool:
-    points = [obj.matrix_world @ Vector(c) for c in obj.bound_box]
+def _flat_and_large(obj, lowest: float) -> bool:
+    mw = obj.matrix_world
+    points = [mw @ Vector(c) for c in obj.bound_box]
     xs, ys, zs = ([p[i] for p in points] for i in range(3))
-    return max(zs) - min(zs) <= FLAT_HEIGHT and (max(xs) - min(xs)) * (max(ys) - min(ys)) >= FLAT_AREA
+    footprint = (max(xs) - min(xs)) * (max(ys) - min(ys))
+    if max(zs) - min(zs) > FLAT_HEIGHT or max(zs) > lowest + GROUND_RISE or footprint < FLAT_AREA:
+        return False
+    turn = mw.to_3x3().inverted_safe().transposed()
+    scale = abs(mw.to_scale().x * mw.to_scale().y)
+    up = sum(p.area * scale for p in obj.data.polygons if (turn @ p.normal).normalized().z > 0.9)
+    return up >= FLAT_AREA and up >= FLAT_SHARE * footprint
 
 
 def add_place(place: dict):
@@ -638,9 +650,9 @@ def add_place(place: dict):
         if o.hide_render:
             for c in list(o.users_collection):
                 c.objects.unlink(o)
-    for o in coll.all_objects:
-        if o.type != "MESH":
-            continue
+    meshes = [o for o in coll.all_objects if o.type == "MESH"]
+    lowest = min((min((o.matrix_world @ Vector(c)).z for c in o.bound_box) for o in meshes), default=0.0)
+    for o in meshes:
         slots = [s.material for s in o.material_slots] or [None]
         # The object's own name and its material's first, then its collections' (H_plants, 植栽…) as a fallback; a
         # paint the modeller made very dark is ベタ whatever its name (a black van's body).
@@ -656,7 +668,7 @@ def add_place(place: dict):
             guessed.append(g)
         # A large flat surface (a lot's ground, a lawn, a terrace, a flat roof) stays white as a manga leaves it, its
         # shadows toned: a whole ground in grey weighs the picture down.
-        if _flat_and_large(o):
+        if _flat_and_large(o, lowest):
             guessed = [g if g in KEEP_ON_FLAT else FLAT for g in guessed]
         o["nb_place_materials"] = guessed
         leafy = [g in FOLIAGE for g in guessed]

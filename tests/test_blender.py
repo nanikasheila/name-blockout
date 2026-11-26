@@ -317,6 +317,15 @@ def _house_blend(folder: Path) -> None:
     floor.from_pydata([(-6, -6, 0), (6, -6, 0), (6, 14, 0), (-6, 14, 0)], [], [(0, 1, 2, 3)])
     floor.materials.append(bpy.data.materials.new("Lawn"))
     coll.objects.link(bpy.data.objects.new("Floor", floor))
+    # A lot's ground with a bank down to a lower level (0.8 m): still a ground.
+    bank = bpy.data.meshes.new("site_ground")
+    bank.from_pydata(
+        [(-20, -30, 0), (20, -30, 0), (20, -10, 0), (-20, -10, 0), (-20, -31, -0.8), (20, -31, -0.8)],
+        [],
+        [(0, 1, 2, 3), (4, 5, 1, 0)],
+    )
+    bank.materials.append(bpy.data.materials.new("Grass"))
+    coll.objects.link(bpy.data.objects.new("site_ground", bank))
     # A shell: a wall and the ceiling over it in one mesh (as models often are).
     shell = bpy.data.meshes.new("Shell")
     shell.from_pydata([(-6, 14, 0), (6, 14, 0), (6, 14, 2.6), (-6, 14, 2.6), (-6, 2, 2.6), (6, 2, 2.6)], [], [(0, 1, 2, 3), (3, 2, 5, 4)])
@@ -377,6 +386,8 @@ def test_develop_in_a_place(tmp_path):
     assert bpy.data.objects["Solar_panel"].get("nb_foliage")
     # A large flat lawn is ground: white, not the grass's grey.
     assert bpy.data.objects["Floor"]["nb_place_materials"] == ["白地"]
+    assert bpy.data.objects["site_ground"]["nb_place_materials"] == ["白地"] and not bpy.data.objects["site_ground"].get("nb_foliage")
+    assert bpy.data.objects["Shell"]["nb_place_materials"] == ["白壁"]
     assert "NB_lines_near_foliage" in [ls.name for ls in bpy.context.view_layer.freestyle_settings.linesets]
 
     shot["look"] = {"setting": "indoor", "light": {"key": "interior"}}
