@@ -35,9 +35,9 @@ import bpy
 import numpy as np
 from mathutils import Vector
 
-from ..far import BANDS, LINE_SCALE
+from ..lines import boundary_lines
 from ..materials import DEFAULT, LIBRARY
-from .render import inner_px, line_px, render_passes
+from .render import inner_px, line_px, render_passes, setup
 from .scene import PREFIX, collection
 
 #: Under this share of the light a white face gets facing the sun, a pixel is in shadow.
@@ -356,9 +356,32 @@ def develop_passes(plan: dict, built: dict, out_dir: Path, samples: int = 16) ->
     keep_world = scene.world
 
     # 線画 (and 遠景) as in the Blockout, without the light's ground.
+    # 0. The boundaries (lines.py): each pixel's depth and normal as the finished picture shows them (the light's
+    # ground in, the grid on the same plane out), drawn twice as large for a small picture so thin lines stay
+    # smooth. A line is as thick as its boundary is deep; far things get none, and are told by their tones.
+    setup(plan)
+    tone_far()
+    grid = bpy.data.collections.get(PREFIX + "ground")
+    if grid is not None:
+        grid.hide_render = True
+    by = 2 if w * h < SUPERSAMPLE_UNDER else 1
+    scene.render.resolution_percentage = 100 * by
+    layer.material_override = _depths()
+    depths = _render(out_dir / "_depth.exr", 1, exact=True)
+    layer.material_override = _normals()
+    normals = _render(out_dir / "_normal.exr", 1, exact=True)[..., :3] * 2.0 - 1.0
+    layer.material_override = None
+    scene.render.resolution_percentage = 100
+    if grid is not None:
+        grid.hide_render = False
+    ink, line_info = boundary_lines(depths[..., 0], depths[..., 3] > 0.5, normals, depths[..., 1] > 0.5, plan["render"]["dpi"] / 25.4, by)
+    del depths, normals
+
+    # 線画: the texture lines (marked edges, the ground's grid) by Freestyle, fading with distance, without the
+    # light's ground; 遠景: the far band alone, its tones.
     collection("light_ground").hide_render = True
     passes = [p for p in ("線画", "遠景") if p in plan["render"]["passes"]]
-    files = render_passes(plan, out_dir, passes=passes, crowns=False)
+    files = render_passes(plan, out_dir, passes=passes, texture_from=line_info["foregroundM"])
     collection("light_ground").hide_render = False
     # The grid lies on the same plane as the light's ground: the two would shade each other black.
     grid = bpy.data.collections.get(PREFIX + "ground")
@@ -430,14 +453,6 @@ def develop_passes(plan: dict, built: dict, out_dir: Path, samples: int = 16) ->
     # …and how high each pixel's surface is: a step's edge has up on both sides too, at two heights.
     layer.material_override = _height()
     height = _render(out_dir / "_height.exr", 1, exact=True)[..., 0] - HEIGHT_OFFSET
-    # …and which crown (or bush) each pixel shows, how far it is and how thick its band's pen: their outlines are
-    # drawn from this (Freestyle breaks a lumpy crown's outline into bits).
-    for band in BANDS:
-        for o in collection("band_" + band).all_objects:
-            o["nb_line_scale"] = LINE_SCALE[band]
-    mark_crowns(built)
-    layer.material_override = _crowns()
-    crowns = _render(out_dir / "_crowns.exr", 1, exact=True)
     # …and which solar cell (a face of the model) each pixel shows: light joints between them.
     cell_ids = None
     if any(o.get("nb_cell_faces") for o in built.get("place", [])):
@@ -471,11 +486,14 @@ def develop_passes(plan: dict, built: dict, out_dir: Path, samples: int = 16) ->
     reach = max(2, round(line_px(dpi) * 1.2))
     if "線画" in files:
         lines = grey_joints(lines, up, reach, height, thin=int(inner_px(dpi) // 3), tip=math.ceil(line_px(dpi) / 2) + 1)
-        lines = _over(crown_lines(crowns, line_px(dpi), inner_px(dpi), _focal_px(scene)), lines)
+        black = np.zeros((h, w, 4), dtype=np.float32)
+        black[..., 3] = ink[:h, :w]
+        lines = _over(black, lines)
         _save(files["線画"], lines)
     files["完成"] = _save(out_dir / "完成.png", _over(white_on_beta(lines, tone, reach), _over(tone, white)))
     check = shadow_check(plan, built, shadow, lit, sun)
-    for name in ("_lit.png", "_shadow.png", "_up.png", "_height.exr", "_crowns.exr", "_cells.exr"):
+    check["lines"] = line_info
+    for name in ("_lit.png", "_shadow.png", "_up.png", "_height.exr", "_depth.exr", "_normal.exr", "_cells.exr"):
         (out_dir / name).unlink(missing_ok=True)
     if grid is not None:
         grid.hide_render = False
@@ -530,71 +548,6 @@ def split_above(obj, z: float):
     return piece
 
 
-#: Within one crown, a lump is drawn round where the one behind it is farther by this share of the distance, and
-#: by this many pixels' worth (a lump's curve turning away is not an outline).
-LUMP_DEPTH = 0.015
-LUMP_PIXELS = 25.0
-
-
-def _crowns():
-    """A material showing, on a crown's or bush's faces (marked freestyle_face), its tree (a number in 0.1–1), the
-    distance from the camera and its band's line scale; elsewhere 0 (to be read back exactly)."""
-    mat = bpy.data.materials.get(PREFIX + "crowns") or bpy.data.materials.new(PREFIX + "crowns")
-    mat.use_nodes = True
-    nodes, links = mat.node_tree.nodes, mat.node_tree.links
-    nodes.clear()
-    out = nodes.new("ShaderNodeOutputMaterial")
-    info = nodes.new("ShaderNodeAttribute")
-    info.attribute_type = "OBJECT"
-    info.attribute_name = "nb_crown"
-    marked = nodes.new("ShaderNodeAttribute")
-    marked.attribute_type = "GEOMETRY"
-    marked.attribute_name = "freestyle_face"
-    scale = nodes.new("ShaderNodeAttribute")
-    scale.attribute_type = "OBJECT"
-    scale.attribute_name = "nb_line_scale"
-    cam = nodes.new("ShaderNodeCameraData")
-    ident = nodes.new("ShaderNodeMath")
-    ident.operation = "MULTIPLY_ADD"
-    ident.inputs[1].default_value = 0.9
-    ident.inputs[2].default_value = 0.1
-    links.new(info.outputs["Fac"], ident.inputs[0])
-    on = nodes.new("ShaderNodeMath")
-    on.operation = "MULTIPLY"
-    links.new(ident.outputs[0], on.inputs[0])
-    links.new(marked.outputs["Fac"], on.inputs[1])
-    rgb = nodes.new("ShaderNodeCombineXYZ")
-    links.new(on.outputs[0], rgb.inputs[0])
-    links.new(cam.outputs["View Distance"], rgb.inputs[1])
-    links.new(scale.outputs["Fac"], rgb.inputs[2])
-    emit = nodes.new("ShaderNodeEmission")
-    links.new(rgb.outputs[0], emit.inputs["Color"])
-    links.new(emit.outputs[0], out.inputs[0])
-    return mat
-
-
-def mark_crowns(built: dict) -> None:
-    """Each object's crown (nb_crown, 0–1): one per tree (a thing of the plan, or a place's object with its
-    children), so a tree's lumps are one crown, outlined round the whole and inside only where one stands well before
-    another."""
-    import zlib
-
-    def number(key: str) -> float:
-        return (zlib.crc32(key.encode("utf-8")) % 9973) / 9973.0
-
-    for ident, objs in built.get("objects", {}).items():
-        for o in objs:
-            for part in (o, *o.children_recursive):
-                part["nb_crown"] = number("thing:" + ident)
-    for o in bpy.context.scene.objects:
-        if "nb_crown" in o:
-            continue
-        root = o
-        while root.parent is not None:
-            root = root.parent
-        o["nb_crown"] = number("object:" + root.name)
-
-
 def _face_value(name: str):
     """A material showing a face attribute's value (to be read back exactly)."""
     mat = bpy.data.materials.get(PREFIX + "face_" + name) or bpy.data.materials.new(PREFIX + "face_" + name)
@@ -629,54 +582,89 @@ def cell_gaps(ids: np.ndarray, min_px: float) -> np.ndarray:
     return gap
 
 
-def _focal_px(scene) -> float:
-    cam = scene.camera
-    if cam is None or cam.data.type != "PERSP":
-        return 1000.0
-    return scene.render.resolution_x * cam.data.lens / cam.data.sensor_width
+#: Under this many pixels the boundaries are drawn from passes twice as large (a 150 dpi panel's thin lines).
+SUPERSAMPLE_UNDER = 4_000_000
+#: The far band's tones: flat, lighter with distance (the air between), from the first density at the first
+#: distance (m) to the second at the second. Far things have no lines: their shapes are told by these.
+FAR_TONES = ((100.0, 0.26), (6000.0, 0.07))
 
 
-def crown_lines(crowns: np.ndarray, outline: float, inner: float, focal_px: float) -> np.ndarray:
-    """Black lines round each crown where it stands before something else (another crown, a thing, the sky) at its
-    band's outline width, and round a lump before a farther lump of the same crown at the inner width; drawn on the
-    crown's side, softened at their edges."""
-    ident, dist, scale = crowns[..., 0], crowns[..., 1], crowns[..., 2]
-    alpha = crowns[..., 3] > 0.5
-    crown = (ident > 0.05) & alpha
-    dist = np.where(alpha, dist, np.inf)
-    h, w = ident.shape
-    outer = np.zeros((h, w), dtype=bool)
-    lump = np.zeros((h, w), dtype=bool)
-    for dy, dx in ((0, 1), (0, -1), (1, 0), (-1, 0)):
-        shifted = (slice(max(dy, 0), h + min(dy, 0)), slice(max(dx, 0), w + min(dx, 0)))
-        source = (slice(max(-dy, 0), h + min(-dy, 0)), slice(max(-dx, 0), w + min(-dx, 0)))
-        here, there = ident[source], ident[shifted]
-        near, far = dist[source], dist[shifted]
-        mine = crown[source]
-        behind = far > near
-        other = np.abs(here - there) > 1e-4
-        with np.errstate(invalid="ignore"):  # the sky behind the sky: inf − inf
-            step = (far - near) > np.maximum(LUMP_DEPTH * near, LUMP_PIXELS * near / max(focal_px, 1.0))
-        outer[source] |= mine & behind & other
-        lump[source] |= mine & behind & ~other & step
-    out = np.zeros((h, w, 4), dtype=np.float32)
-    ink = np.zeros((h, w), dtype=np.float32)
-    for mask, width in ((lump, inner), (outer, outline)):
-        for s in np.unique(np.round(scale[mask], 2)):
-            r = max(0, round(max(0.75, width * s) / 2 - 0.5))
-            pen = mask & (np.abs(scale - s) < 0.006)
-            drawn = grow(pen, r) if r else pen
-            # A small blur (¼ ½ ¼) smooths the pixels' stairs; a one-pixel line keeps its full black in its middle.
-            soft = drawn.astype(np.float32)
-            for axis in (0, 1):
-                padded = np.pad(soft, [(1, 1) if a == axis else (0, 0) for a in (0, 1)], mode="edge")
-                lo = padded[:-2] if axis == 0 else padded[:, :-2]
-                mid = padded[1:-1] if axis == 0 else padded[:, 1:-1]
-                hi = padded[2:] if axis == 0 else padded[:, 2:]
-                soft = 0.25 * lo + 0.5 * mid + 0.25 * hi
-            ink = np.maximum(ink, np.minimum(1.0, soft * (2.0 if r == 0 else 1.0)))
-    out[..., 3] = ink
-    return out
+def _depths():
+    """A material showing each surface's depth from the camera (m), and whether its face is marked soft
+    (freestyle_face: a crown's lumps, a louvre's slats); to be read back exactly."""
+    mat = bpy.data.materials.get(PREFIX + "depths") or bpy.data.materials.new(PREFIX + "depths")
+    mat.use_nodes = True
+    nodes, links = mat.node_tree.nodes, mat.node_tree.links
+    nodes.clear()
+    out = nodes.new("ShaderNodeOutputMaterial")
+    cam = nodes.new("ShaderNodeCameraData")
+    marked = nodes.new("ShaderNodeAttribute")
+    marked.attribute_type = "GEOMETRY"
+    marked.attribute_name = "freestyle_face"
+    rgb = nodes.new("ShaderNodeCombineXYZ")
+    links.new(cam.outputs["View Z Depth"], rgb.inputs[0])
+    links.new(marked.outputs["Fac"], rgb.inputs[1])
+    emit = nodes.new("ShaderNodeEmission")
+    links.new(rgb.outputs[0], emit.inputs["Color"])
+    links.new(emit.outputs[0], out.inputs[0])
+    return mat
+
+
+def _normals():
+    """A material showing each surface's normal (x, y, z as 0–1: ½ + ½ n), flat."""
+    mat = bpy.data.materials.get(PREFIX + "normals") or bpy.data.materials.new(PREFIX + "normals")
+    mat.use_nodes = True
+    nodes, links = mat.node_tree.nodes, mat.node_tree.links
+    nodes.clear()
+    out = nodes.new("ShaderNodeOutputMaterial")
+    geo = nodes.new("ShaderNodeNewGeometry")
+    half = nodes.new("ShaderNodeVectorMath")
+    half.operation = "MULTIPLY_ADD"
+    half.inputs[1].default_value = (0.5, 0.5, 0.5)
+    half.inputs[2].default_value = (0.5, 0.5, 0.5)
+    links.new(geo.outputs["Normal"], half.inputs[0])
+    emit = nodes.new("ShaderNodeEmission")
+    links.new(half.outputs["Vector"], emit.inputs["Color"])
+    links.new(emit.outputs[0], out.inputs[0])
+    return mat
+
+
+def tone_far() -> None:
+    """The far band's things in one flat tone each, lighter the farther (FAR_TONES)."""
+    coll = bpy.data.collections.get(PREFIX + "band_far")
+    if coll is None or not coll.all_objects:
+        return
+    (d0, t0), (d1, t1) = FAR_TONES
+    mat = bpy.data.materials.get(PREFIX + "dev_far") or bpy.data.materials.new(PREFIX + "dev_far")
+    mat.use_nodes = True
+    nodes, links = mat.node_tree.nodes, mat.node_tree.links
+    nodes.clear()
+    out = nodes.new("ShaderNodeOutputMaterial")
+    cam = nodes.new("ShaderNodeCameraData")
+    log = nodes.new("ShaderNodeMath")
+    log.operation = "LOGARITHM"
+    log.inputs[1].default_value = 10.0
+    links.new(cam.outputs["View Distance"], log.inputs[0])
+    shown = nodes.new("ShaderNodeMapRange")
+    shown.clamp = True
+    shown.inputs["From Min"].default_value = math.log10(d0)
+    shown.inputs["From Max"].default_value = math.log10(d1)
+    shown.inputs["To Min"].default_value = 1.0 - t0
+    shown.inputs["To Max"].default_value = 1.0 - t1
+    links.new(log.outputs[0], shown.inputs["Value"])
+    # As shown on the screen → the light that shows so (about sRGB).
+    light = nodes.new("ShaderNodeMath")
+    light.operation = "POWER"
+    light.inputs[1].default_value = 2.2
+    links.new(shown.outputs["Result"], light.inputs[0])
+    emit = nodes.new("ShaderNodeEmission")
+    emit.inputs["Color"].default_value = (1.0, 1.0, 1.0, 1.0)
+    links.new(light.outputs[0], emit.inputs["Strength"])
+    links.new(emit.outputs[0], out.inputs[0])
+    for o in coll.all_objects:
+        if o.type == "MESH":
+            o.data.materials.clear()
+            o.data.materials.append(mat)
 
 
 def _facing_up():

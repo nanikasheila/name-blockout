@@ -20,6 +20,7 @@ from pathlib import Path
 import bpy
 
 from ..far import BANDS, LINE_SCALE
+from ..lines import fold_mm
 from .scene import PREFIX, holdout_material
 
 #: A pen's widths, in mm on the page (a 0.2 mm outline, 0.13 mm inside it, as a background's fine liners), and
@@ -58,7 +59,27 @@ def _style(name: str, color, thickness: float, length_min: float):
     return style
 
 
-def _freestyle(scene, dpi: float):
+#: The development's texture lines (a floor's joints, a wall's boards: the edges a modeller marked) fade from the
+#: foreground's distance to this many times as far, and thin to this share.
+TEXTURE_FADE = 6.0
+TEXTURE_THIN = 0.4
+
+
+def _fade(style, start: float) -> None:
+    """The style's lines thinner and paler with distance from the camera, gone at TEXTURE_FADE × `start`."""
+    thin = style.thickness_modifiers.new("far", "DISTANCE_FROM_CAMERA")
+    thin.range_min, thin.range_max = start, start * TEXTURE_FADE
+    thin.value_min, thin.value_max = style.thickness, style.thickness * TEXTURE_THIN
+    pale = style.alpha_modifiers.new("far", "DISTANCE_FROM_CAMERA")
+    pale.range_min, pale.range_max = start, start * TEXTURE_FADE
+    pale.invert = True
+
+
+def _freestyle(scene, dpi: float, texture_from: float | None = None):
+    """The line sets. For a Blockout: every thing's outline and edges, one pen pair per distance band. For a
+    development (`texture_from`: its foreground's distance): only the folds and the texture lines (creases,
+    marked edges, the ground's grid), thin, fading with distance; its boundaries are drawn from depth (lines.py),
+    and far things get none."""
     scene.render.use_freestyle = True
     scene.render.line_thickness_mode = "ABSOLUTE"
     layer = bpy.context.view_layer
@@ -67,6 +88,8 @@ def _freestyle(scene, dpi: float):
     fs.crease_angle = 2.3  # ~132°: box edges, not a curved body's facets
     for ls in list(fs.linesets):
         fs.linesets.remove(ls)
+    for style in [st for st in bpy.data.linestyles if st.name.startswith("NB_style_")]:
+        bpy.data.linestyles.remove(style)
     outline, inner = line_px(dpi), inner_px(dpi)
     for group in (*BANDS, *GROUNDS):
         coll = bpy.data.collections.get(PREFIX + (group if group in GROUNDS else "band_" + group))
@@ -77,9 +100,30 @@ def _freestyle(scene, dpi: float):
             # The ground's grid is thin and grey, as a background artist draws a lot's paving (a place's joints:
             # develop.py).
             width = max(0.75, outline * scale)
-            ls = _lineset(fs, f"NB_lines_{group}", coll, _style(f"NB_style_{group}", GROUND_LINE, width, width * 3))
+            style = _style(f"NB_style_{group}", GROUND_LINE, width, width * 3)
+            if texture_from:
+                _fade(style, texture_from)
+            ls = _lineset(fs, f"NB_lines_{group}", coll, style)
             ls.select_crease = True
             ls.select_edge_mark = True
+            continue
+        if texture_from:
+            if group == "far":
+                continue
+            # A fold's width at the foreground (lines.py), thinner and paler with distance: the folds of small
+            # faces (a wall's boards) come out as whole strokes here, where a picture's pixels would dot them.
+            width = max(0.4, fold_mm() * dpi / 25.4)
+            style = _style(f"NB_style_{group}_texture", (0, 0, 0), width, max(3.0, inner * MIN_STROKE_WIDTHS))
+            _fade(style, texture_from)
+            marks = _lineset(fs, f"NB_lines_{group}_texture", coll, style)
+            marks.select_silhouette = False
+            marks.select_external_contour = False
+            marks.select_crease = True
+            marks.select_edge_mark = True
+            if any(o.get("nb_foliage") for o in coll.all_objects):
+                marks.select_by_face_marks = True
+                marks.face_mark_negation = "EXCLUSIVE"
+                marks.face_mark_condition = "ONE"
             continue
         # Two pens, as an artist holds them: the outline (a thing against what is behind it) thicker, the edges
         # inside it (creases, marked edges) thinner.
@@ -193,8 +237,8 @@ def _find_gpu() -> str:
     return _chosen
 
 
-def render_passes(plan: dict, out_dir: Path, passes=("完成", "線画", "トーン"), samples: int = 6, crowns: bool = True) -> dict:
-    """The passes as PNGs; `crowns` False: the 線画 without the crowns' lines (the development draws them itself)."""
+def setup(plan: dict, samples: int = 6):
+    """The scene set for flat pictures of the plan's size (Cycles, a few samples, no bounces)."""
     scene = bpy.context.scene
     scene.render.engine = "CYCLES"
     w, h = plan["render"]["sizePx"]
@@ -208,7 +252,21 @@ def render_passes(plan: dict, out_dir: Path, passes=("完成", "線画", "トー
     scene.view_settings.view_transform = "Standard"
     scene.view_settings.look = "None"
     scene.render.resolution_x, scene.render.resolution_y = w, h
-    _freestyle(scene, plan["render"]["dpi"])
+    scene.render.resolution_percentage = 100
+    return scene
+
+
+def render_passes(
+    plan: dict,
+    out_dir: Path,
+    passes=("完成", "線画", "トーン"),
+    samples: int = 6,
+    texture_from: float | None = None,
+) -> dict:
+    """The passes as PNGs; `texture_from` (a development's foreground distance): the 線画 with the texture lines
+    only (the development draws the boundaries itself, from depth)."""
+    scene = setup(plan, samples)
+    _freestyle(scene, plan["render"]["dpi"], texture_from)
     layer = bpy.context.view_layer
     out_dir.mkdir(parents=True, exist_ok=True)
     files = {}
@@ -226,10 +284,6 @@ def render_passes(plan: dict, out_dir: Path, passes=("完成", "線画", "トー
             continue
         far = cfg.get("far", False)
         _show_only_far(far)
-        if not crowns and name == "線画":
-            for ls in layer.freestyle_settings.linesets:
-                if "_foliage" in ls.name:
-                    ls.show_render = False
         scene.world = panorama if (far and panorama) else white
         scene.render.film_transparent = cfg["transparent"]
         scene.render.use_freestyle = cfg["lines"]
