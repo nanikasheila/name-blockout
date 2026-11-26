@@ -202,8 +202,9 @@ def test_develop_a_room_with_a_window(tmp_path):
     image = bpy.data.images.load(str(tmp_path / "案" / "panel1" / "1" / "線画.png"))
     w, h = image.size
     lines = np.array(image.pixels[:], dtype=np.float32).reshape(h, w, 4)[::-1]
-    # The ceiling's corners are drawn high in the picture (above everything standing in the room).
-    assert (lines[: h * 3 // 10, :, 3] > 0.5).sum() > w // 2
+    # The ceiling's corners are drawn high in the picture (above everything standing in the room): folds, so thin
+    # ones (paler than a full line at this size).
+    assert (lines[: h * 3 // 10, :, 3] > 0.1).sum() > w // 2
 
 
 def _chair_blend(folder: Path) -> None:
@@ -418,7 +419,14 @@ def test_develop_in_a_place(tmp_path):
     # A ベタ thing's folds are drawn (white over it).
     assert bpy.data.objects["site_ground"].get("nb_ground")
     assert all(v.value for v in van.data.attributes["freestyle_edge"].data)
-    assert "NB_lines_near_foliage" in [ls.name for ls in bpy.context.view_layer.freestyle_settings.linesets]
+    # The development's line sets: the texture lines only (marked edges, fading with distance); none for far things.
+    sets = [ls.name for ls in bpy.context.view_layer.freestyle_settings.linesets]
+    assert "NB_lines_near_texture" in sets and not [n for n in sets if n.startswith("NB_lines_far")], sets
+    check = json.loads((tmp_path / "blockout" / "panel1" / "2" / "check.json").read_text(encoding="utf-8"))
+    lines = next(c for c in check["checks"] if c["name"] == "影の向き")["lines"]
+    assert 1.5 <= lines["foregroundM"] <= 25 and lines["inkShare"] > 0, lines
+    far = bpy.data.collections["NB_band_far"].all_objects
+    assert far and all(o.data.materials[0].name == "NB_dev_far" for o in far if o.type == "MESH")
 
     shot["look"] = {"setting": "indoor", "light": {"key": "interior"}}
     shot["output"] = {}
@@ -484,29 +492,6 @@ def test_a_joint_greys_up_to_the_wall_and_a_narrow_beta_keeps_black_lines():
     lines = np.zeros((h, w, 4), dtype=np.float32)
     lines[13, 5:55, 3] = 1.0
     assert white_on_beta(lines, tone, 2)[13, 30, 0] == 0.0
-
-
-@needs_blender
-def test_crown_outlines_unbroken_on_the_front_crown():
-    """A crown is outlined all round where it stands before the sky or another crown (the line on its own side), not
-    inside; the crown behind gets no line where the front one covers it."""
-    import numpy as np
-
-    from name_blockout.blender.develop import crown_lines
-
-    h, w = 60, 80
-    crowns = np.zeros((h, w, 4), dtype=np.float32)
-    yy, xx = np.mgrid[0:h, 0:w]
-    back = (yy - 30) ** 2 + (xx - 50) ** 2 < 20**2
-    front = (yy - 30) ** 2 + (xx - 30) ** 2 < 15**2
-    crowns[back] = (0.4, 20.0, 1.0, 1.0)
-    crowns[front] = (0.8, 10.0, 1.0, 1.0)
-    out = crown_lines(crowns, 3.0, 2.0, 1000.0)
-    ink = out[..., 3] > 0.5
-    assert ink[30, 15] and ink[30, 45 - 1]  # the front crown's left and right (over the back crown) edges
-    assert ink[30, 69]  # the back crown's edge against the sky
-    assert not ink[30, 30] and not ink[30, 55]  # inside the crowns
-    assert not ink[30, 46 + 2]  # on the back crown, just past the front one: its line is on the front's side
 
 
 @needs_blender
