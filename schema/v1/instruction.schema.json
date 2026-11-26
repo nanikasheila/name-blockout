@@ -219,6 +219,25 @@
               "items": { "$ref": "#/$defs/axis" },
               "maxItems": 2
             },
+            "moves": {
+              "description": "場所の中の物を動かす（.blend の中の物の名前で）。位置は場所の座標の m、向きは Z まわりの度。",
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": ["object"],
+                "properties": {
+                  "object": { "type": "string" },
+                  "positionM": { "$ref": "#/$defs/vec3" },
+                  "turnDeg": { "type": "number" }
+                },
+                "additionalProperties": false
+              }
+            },
+            "hide": {
+              "description": "場所の中で描かない物の名前（頭が同じものも）。",
+              "type": "array",
+              "items": { "type": "string" }
+            },
             "note": { "type": "string" }
           },
           "additionalProperties": false
@@ -242,6 +261,38 @@
               "band": {
                 "description": "距離帯: near（近景）・middle（中景）・far（遠景）。なければ組んだ距離から道具が決める。線の太さ・トーンの濃さ・遠景の層に使う。",
                 "enum": ["near", "middle", "far"]
+              },
+              "shape": {
+                "description": "開発で描く形。種類の名前（house・building・van・sofa など、shapes.py の KINDS）か、部品の並び（unit が box なら箱に対する 0〜1、m ならメートル。正面は −Y）。書かなければ名前の言葉から選ぶ。Blockout は箱のまま。",
+                "oneOf": [
+                  { "type": "string" },
+                  {
+                    "type": "object",
+                    "required": ["parts"],
+                    "properties": {
+                      "unit": { "enum": ["box", "m"] },
+                      "parts": {
+                        "type": "array",
+                        "minItems": 1,
+                        "items": {
+                          "type": "object",
+                          "required": ["s"],
+                          "properties": {
+                            "name": { "description": "部品の名前（look.materials の target に書くと、その部品だけ別の材質）", "type": "string" },
+                            "shape": { "enum": ["box", "cylinder", "sphere", "prism"] },
+                            "c": { "description": "部品のまん中", "type": "array", "items": { "type": "number" }, "minItems": 3, "maxItems": 3 },
+                            "s": { "description": "部品の大きさ（幅・奥行・高さ）", "type": "array", "items": { "type": "number", "exclusiveMinimum": 0 }, "minItems": 3, "maxItems": 3 },
+                            "axis": { "description": "cylinder の向き", "enum": ["X", "Y", "Z"] },
+                            "ridge": { "description": "prism（切妻）の棟の向き", "enum": ["X", "Y"] },
+                            "material": { "description": "材質ライブラリの名前（なければ物の材質）", "type": "string" }
+                          },
+                          "additionalProperties": false
+                        }
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                ]
               }
             },
             "additionalProperties": false

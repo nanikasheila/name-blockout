@@ -44,7 +44,8 @@ LIBRARY = {
         Material("トタン", 0.5, 0.6, 0.15, 0.45, lines="detail", note="波板の筋を線で"),
         Material("ガラス", 0.3, 0.05, 0.3, 0.6, note="映り込みの斜めの白抜き。夜は内側の明かり"),
         Material("瓦", 0.35, 0.8, 0.35, 0.6, lines="detail", note="瓦の段を線で"),
-        Material("アスファルト", 0.25, 0.95, 0.25, 0.55, note="白線は白抜き"),
+        Material("アスファルト", 0.25, 0.95, 0.1, 0.4, note="白線は白抜き。一面を濃く塗らない"),
+        Material("白地", 0.9, 1.0, 0.0, 0.25, note="地面・床は白地のまま、影だけ薄いトーン。目地や舗装の継ぎ目は線で"),
         Material("土", 0.4, 1.0, 0.2, 0.45),
         Material("草", 0.35, 1.0, 0.2, 0.5, lines="detail", note="草むらは線の束で、影はトーン"),
         Material("布", 0.6, 1.0, 0.1, 0.4, note="しわは線で"),
@@ -96,9 +97,65 @@ GUESSES = {
 GROUND = "ground"
 #: A room's walls and ceiling (room.py).
 WALLS = "walls"
-DEFAULT_GROUND = "アスファルト"
-#: Indoors the ground is a floor.
-DEFAULT_FLOOR = "木"
+#: The ground and a floor stay white (the shadows on them toned), as a manga's background leaves them: a whole
+#: ground in a mid grey weighs the picture down and the things no longer stand out.
+DEFAULT_GROUND = "白地"
+DEFAULT_FLOOR = "白地"
+
+#: Words in the names of a place's objects and their materials (a .blend made in English, often) → a material.
+PLACE_WORDS = {
+    "roof": "瓦",
+    "tile": "瓦",
+    "glass": "ガラス",
+    "window": "ガラス",
+    "tire": "黒い塗装",
+    "tyre": "黒い塗装",
+    "wheel": "黒い塗装",
+    "rubber": "黒い塗装",
+    "leaf": "草",
+    "leaves": "草",
+    "foliage": "草",
+    "bush": "草",
+    "hedge": "草",
+    "canopy": "草",
+    "crown": "草",
+    "grass": "草",
+    "lawn": "草",
+    "trunk": "木",
+    "wood": "木",
+    "timber": "木",
+    "deck": "木",
+    "concrete": "コンクリート",
+    "stone": "コンクリート",
+    "retaining": "コンクリート",
+    "asphalt": "アスファルト",
+    "metal": "金属",
+    "steel": "金属",
+    "rail": "金属",
+    "fence": "金属",
+    "solar": "ガラス",
+    "water": "水",
+    "fabric": "布",
+    "cloth": "布",
+    "sofa": "布",
+    "curtain": "布",
+    "葉": "草",
+    "茂み": "草",
+    "植栽": "草",
+    "生垣": "草",
+    "芝": "草",
+}
+#: The materials whose things are drawn by their outline only (the pen does not go into a crown's facets).
+FOLIAGE = ("草",)
+
+
+def guess_part(*names: str) -> str:
+    """A place's part's material from its names (the object's, its material's): the longest word found, else DEFAULT."""
+    text = " ".join(n for n in names if n).lower()
+    found = [w for w in PLACE_WORDS if w in text]
+    if found:
+        return PLACE_WORDS[max(found, key=len)]
+    return guess(" ".join(names)) or DEFAULT
 
 
 def guess(label: str) -> str | None:

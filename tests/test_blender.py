@@ -121,7 +121,8 @@ def test_develop_example(tmp_path):
     shadow = np.array(shown, dtype=bool).reshape(fh, fw)[::-1]
     assert shadow_check(plan, None, shadow, None, sun=True)["pass"]
     assert not shadow_check(plan, None, ~shadow, None, sun=True)["pass"]
-    assert set(r["files"]) == {"完成", "線画", "トーン", "影"}
+    # Outdoors without far layers asked for, the development adds them (and draws 遠景 on its own).
+    assert set(r["files"]) == {"完成", "線画", "トーン", "影", "遠景"}
     assert r["note"].startswith("開発（光と材質、name-blockout）: 午後・晴れ・日差しは")
     shade = bpy.data.images.load(str(tmp_path / "案" / "panel1" / "1" / "影.png"))
     alpha = shade.pixels[3::4]
@@ -148,7 +149,7 @@ def test_develop_indoors_and_beta(tmp_path):
     (tmp_path / "指示.json").write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
     r = run_blockout(tmp_path / "指示.json", preview_dpi=60, log=lambda *_: None, develop=True)[0]
     assert r["pass"], r["note"]
-    assert "屋内・夕方・明かりは窓から" in r["note"] and "look.materials/ground=木" in r["note"]
+    assert "屋内・夕方・明かりは窓から" in r["note"] and "look.materials/ground=白地" in r["note"]
 
     def load(name):
         image = bpy.data.images.load(str(tmp_path / "案" / "panel1" / "1" / f"{name}.png"))
@@ -261,6 +262,10 @@ def test_develop_draws_a_thing_as_its_asset(tmp_path):
     assert "素材に差し替え: 椅子（椅子）" in plan["notes"]
     assert "素材に差し替え: 椅子（椅子）" in r["note"]
     bpy.ops.wm.open_mainfile(filepath=str(tmp_path / "blockout" / "panel1" / "2" / "scene.blend"))
+    # Things without a 素材 get the tool's detailed shapes: the sofa its cushions, the shelf its books.
+    sofa = [o for o in bpy.data.objects["NB_thing_o1"].children if o.get("nb_part") == "座面のクッション"]
+    books = [o for o in bpy.data.objects["NB_thing_o3"].children if o.get("nb_part") == "本"]
+    assert sofa and len(books) > 20 and books[0]["nb_material"] == "布"
     holder = bpy.data.objects["NB_thing_o2"]
     seat = next(o for o in holder.children if o.name.startswith("座面"))
     back = next(o for o in holder.children if o.name.startswith("背もたれ"))
@@ -273,3 +278,84 @@ def test_develop_draws_a_thing_as_its_asset(tmp_path):
     back_c = back.matrix_world @ Vector((0, 0.2, 0.75))
     assert (back_c.xy - cam.xy).length > (seat_c.xy - cam.xy).length
     assert seat.data.materials[0].name.startswith("NB_dev_part_座面")
+
+
+def _house_blend(folder: Path) -> None:
+    """A place made here: walls, a ceiling and a roof above the eye, a tree's leaves, a van to move, a sign to hide,
+    a light and a mannequin (D_Aunt) the modeller left in."""
+    import bpy
+
+    bpy.ops.wm.read_factory_settings(use_empty=True)
+    coll = bpy.data.collections.new("家")
+    bpy.context.scene.collection.children.link(coll)
+    boxes = {
+        "Wall_N": ((0, 12, 1.4), (12, 0.2, 2.8), "Plaster"),
+        "Ceiling": ((0, 6, 2.5), (12, 12, 0.1), "Plaster"),
+        "Roof": ((0, 6, 3.2), (13, 13, 0.2), "Roof_tiles"),
+        "Tree_leaves": ((-8, 20, 4), (4, 4, 4), "Leaf"),
+        "VAN": ((400, 0, 1), (4.5, 1.8, 2), "Paint"),
+        "Sign_board": ((3, 8, 1), (1, 0.1, 1), "Paint"),
+        "D_Aunt": ((1, 5, 0.8), (0.4, 0.3, 1.6), "Skin"),
+    }
+    for name, (centre, size, mat) in boxes.items():
+        mesh = bpy.data.meshes.new(name)
+        hx, hy, hz = (v / 2 for v in size)
+        verts = [(centre[0] + sx * hx, centre[1] + sy * hy, centre[2] + sz * hz) for sx in (-1, 1) for sy in (-1, 1) for sz in (-1, 1)]
+        mesh.from_pydata(verts, [], [(0, 1, 3, 2), (4, 6, 7, 5), (0, 4, 5, 1), (2, 3, 7, 6), (0, 2, 6, 4), (1, 5, 7, 3)])
+        mesh.materials.append(bpy.data.materials.new(mat))
+        coll.objects.link(bpy.data.objects.new(name, mesh))
+    lamp = bpy.data.objects.new("SUN", bpy.data.lights.new("SUN", "SUN"))
+    coll.objects.link(lamp)
+    folder.mkdir(parents=True, exist_ok=True)
+    bpy.ops.wm.save_as_mainfile(filepath=str(folder / "house.blend"))
+    (folder / "素材.json").write_text(
+        json.dumps({"assets": [{"name": "家", "kind": "place", "file": "house.blend", "license": "own"}]}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+
+@needs_blender
+def test_develop_in_a_place(tmp_path):
+    """A place (.blend): its light and mannequin left out, its van moved and sign hidden, its parts toned by their
+    names, the leaves drawn by their outline; the eye level shows, so far layers go past it; the development does not
+    draw over the Blockout's take; under the ceiling's light the ceiling and roof let it through."""
+    import bpy
+
+    from name_blockout.pipeline import run_blockout
+
+    _house_blend(tmp_path / "素材")
+    data = json.loads((ROOT / "examples" / "develop" / "指示.json").read_text(encoding="utf-8"))
+    data["folders"] = {"assets": "素材"}
+    shot = data["shots"][0]
+    shot["objects"], shot["figures"] = [], []
+    shot["camera"] = {"heightM": 1.5, "positionM": [0, 0, 1.5]}
+    shot["place"] = {"asset": "家", "moves": [{"object": "VAN", "positionM": [8.4, -18.7, 1], "turnDeg": 90}], "hide": ["Sign"]}
+    shot["look"]["materials"] = []
+    shot["output"] = {"take": "1"}
+    (tmp_path / "指示.json").write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+
+    assert run_blockout(tmp_path / "指示.json", preview_dpi=60, log=lambda *_: None)[0]["take"] == "1"
+    r = run_blockout(tmp_path / "指示.json", preview_dpi=60, log=lambda *_: None, develop=True)[0]
+    assert r["take"] == "2", r
+    assert (tmp_path / "案" / "panel1" / "1" / "完成.png").exists()
+    plan = json.loads((tmp_path / "blockout" / "panel1" / "2" / "plan.json").read_text(encoding="utf-8"))
+    assert plan["far"] and any("遠景が決まっていないので" in n for n in plan["notes"])
+    bpy.ops.wm.open_mainfile(filepath=str(tmp_path / "blockout" / "panel1" / "2" / "scene.blend"))
+    names = {o.name for o in bpy.data.objects}
+    assert (
+        "D_Aunt" not in names
+        and "Sign_board" not in names
+        and not [o for o in bpy.data.objects if o.type == "LIGHT" and not o.name.startswith("NB_")]
+    )
+    van = bpy.data.objects["VAN"]
+    assert tuple(round(v, 3) for v in van.location) == (8.4, -18.7, 1.0) and abs(van.rotation_euler.z - 1.5708) < 1e-3
+    assert bpy.data.objects["Roof"]["nb_place_materials"] == ["瓦"] and bpy.data.objects["Tree_leaves"].get("nb_foliage")
+    assert "NB_lines_near_foliage" in [ls.name for ls in bpy.context.view_layer.freestyle_settings.linesets]
+
+    shot["look"] = {"setting": "indoor", "light": {"key": "interior"}}
+    shot["output"] = {}
+    (tmp_path / "指示.json").write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    r = run_blockout(tmp_path / "指示.json", preview_dpi=60, log=lambda *_: None, develop=True)[0]
+    bpy.ops.wm.open_mainfile(filepath=str(tmp_path / "blockout" / "panel1" / r["take"] / "scene.blend"))
+    assert not bpy.data.objects["Ceiling"].visible_shadow and not bpy.data.objects["Roof"].visible_shadow
+    assert bpy.data.objects["Wall_N"].visible_shadow

@@ -13,12 +13,15 @@ from pathlib import Path
 from .assets import Asset, object_asset, read_assets
 from .camera import AXES, DEFAULT_HEIGHT_M, Camera, CameraError, fit_camera
 from .far import BAND_LABELS, FAR_M, NEAR_M, band_of, far_layers, level_distance, panorama_width_needed, parallax_free_m
+from .far import KIND_LABELS as FAR_LABELS
 from .imagesize import image_size
 from .instruction import Frame, frame_of
 from .look import DEFAULT_NORTH, aimed, lighting, setting_of
 from .materials import assign
 from .room import WALL_LABELS, build_room, room_of, room_words, window_heading
 from .scope import hashes, object_hashes
+from .shapes import KIND_LABELS as SHAPE_LABELS
+from .shapes import kind_of, shape_of
 from .sizes import usual_size
 from .solve import DEFAULT_FIGURE_M, fit_box, fit_figure
 
@@ -206,7 +209,7 @@ def build_plan(data: dict, shot: dict, instruction_path: str | Path | None = Non
             "vanishingAxes": vp_axes,
         },
         "ground": None if use_place else (_floor(room) if room else _ground(camera, render_frame.dpi / frame.dpi, objects + figures)),
-        "place": _asset_entry(place_asset, assets_dir) if use_place else None,
+        "place": _place_entry(place_asset, assets_dir, place) if use_place else None,
         "room": room,
         "references": _references(camera) if (camera.points >= 3 and not objects and not use_place and not room) else [],
         "objects": objects,
@@ -346,13 +349,51 @@ def _references(camera: Camera) -> list[dict]:
 DEVELOP_DPI = 300
 
 
+#: Kinds that make a street of a place (a skyline behind); otherwise trees and mountains.
+TOWN_KINDS = {"house", "building", "shed", "van", "car", "truck", "bus", "pole", "fence", "wall"}
+
+
+def _place_entry(asset, assets_dir, place: dict) -> dict:
+    """The place's file, with what the author moves or hides in it (by the objects' names in the .blend)."""
+    entry = _asset_entry(asset, assets_dir)
+    for key in ("moves", "hide"):
+        if place.get(key):
+            entry[key] = place[key]
+    return entry
+
+
+def horizon_in_frame(plan: dict) -> bool:
+    """Whether the eye level crosses the picture (then what lies beyond the place shows)."""
+    t = plan.get("targets") or {}
+    rows, (_, height) = t.get("horizonPx"), t.get("sizePx") or (0, 0)
+    return bool(rows) and any(0 <= y <= height for y in rows)
+
+
+def default_far(shot: dict) -> list[dict]:
+    """Far layers for a place outdoors whose author named none: a town's skyline where houses, buildings or cars
+    stand, else trees with mountains behind (seeded by the shot, so the same each time)."""
+    seed = sum(ord(ch) for ch in str(shot.get("id") or "shot"))
+    kinds = {kind_of(o) for o in shot.get("objects") or []}
+    if kinds & TOWN_KINDS:
+        return [{"kind": "skyline", "seed": seed}, {"kind": "mountains", "seed": seed + 1}]
+    return [{"kind": "trees", "seed": seed}, {"kind": "mountains", "seed": seed + 1}]
+
+
 def build_develop_plan(data: dict, shot: dict, instruction_path: str | Path | None = None, dpi: float | None = None) -> dict:
     """The development plan: the same camera and layout as the Blockout (the design does not move), with the light
     (look.py) and each thing's material (materials.py) in numbers, drawn at `dpi` (default 300, at most the frame's)."""
     frame = frame_of(shot["frame"])
-    plan = build_plan(data, shot, instruction_path, min(dpi or DEVELOP_DPI, frame.dpi))
-    camera = plan["camera"]
     setting, setting_assumed = setting_of(shot)
+    # Outdoors the finished picture has a distance: far layers the author did not ask for are made (and noted).
+    # A place (a .blend) ends somewhere: past it, when the eye level shows, the far layers too.
+    dpi = min(dpi or DEVELOP_DPI, frame.dpi)
+    far_assumed = default_far(shot) if setting == "outdoor" and not shot.get("far") else []
+    if far_assumed and shot.get("place") and not horizon_in_frame(build_plan(data, shot, instruction_path, dpi)):
+        far_assumed = []
+    built_from = {**shot, "far": far_assumed} if far_assumed else shot
+    plan = build_plan(data, built_from, instruction_path, dpi)
+    plan["hashes"] = {**hashes(shot), "objects": object_hashes(shot)}
+    camera = plan["camera"]
     light, light_assumed = lighting(shot.get("look"), camera["headingDeg"], setting)
     materials, material_assumed = assign(shot, setting, room=bool(plan.get("room")))
     # Light through a window comes from the window the room has (not only "from the left").
@@ -366,6 +407,28 @@ def build_develop_plan(data: dict, shot: dict, instruction_path: str | Path | No
     swapped = [f"{o['label']}（{o['asset']['name']}）" for o in plan["objects"] if o.get("asset")]
     if swapped:
         plan["notes"].append("素材に差し替え: " + "・".join(swapped))
+    # What has no 素材 gets a detailed shape the tool makes (or the author wrote), in its box.
+    given = {o.get("id"): o for o in shot.get("objects") or []}
+    made, plain = [], []
+    for o in plan["objects"]:
+        if o.get("asset") or o.get("band") == "far":
+            continue
+        parts, how = shape_of({**given.get(o["id"], {}), **o}, o["placed"]["sizeM"])
+        if parts:
+            o["parts"], o["shapeKind"] = parts, how
+            made.append(f"{o['label']}（{'作者の形' if how == 'own' else SHAPE_LABELS[how]}・部品 {len(parts)}）")
+        else:
+            plain.append(o["label"])
+    if made:
+        plan["notes"].append("形を作った: " + "・".join(made))
+    if plain:
+        plan["notes"].append(
+            "形のひな形がない物: " + "・".join(plain) + "（箱のまま。objects[].shape に部品を書くか、素材を足してください）"
+        )
+    if far_assumed:
+        kinds = "・".join(FAR_LABELS[layer["kind"]] for layer in far_assumed)
+        plan["notes"].append(f"遠景が決まっていないので {kinds} を置いた")
+        plan["assumptions"].append({"path": "far", "value": far_assumed, "by": "tool", "note": f"遠景が決まっていないので{kinds}"})
     plan["assumptions"] += ([setting_assumed] if setting_assumed else []) + light_assumed + material_assumed
     passes = ["完成", "線画", "トーン", "影"] + (["遠景"] if "遠景" in plan["render"]["passes"] else [])
     plan["render"]["passes"] = passes

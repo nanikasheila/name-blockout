@@ -9,6 +9,7 @@ for things, posts, and simple figures. Nothing is decided here.
 from __future__ import annotations
 
 import math
+import random
 from pathlib import Path
 
 import bmesh
@@ -16,6 +17,7 @@ import bpy
 from mathutils import Matrix, Vector
 
 from ..far import BANDS, TONE_LIFT
+from ..materials import FOLIAGE, guess_part
 
 PREFIX = "NB_"
 #: Which light the tones take (from above, in front, a little left of the camera's usual view).
@@ -444,8 +446,101 @@ def add_thing(obj: dict, camera_at, coll):
     return meshes
 
 
+def _part_mesh(part: dict) -> bmesh.types.BMesh:
+    """One part of a shape (shapes.py) as a mesh in the thing's own frame."""
+    bm = bmesh.new()
+    sx, sy, sz = part["s"]
+    kind = part.get("shape", "box")
+    if kind == "cylinder":
+        bmesh.ops.create_cone(bm, cap_ends=True, segments=24, radius1=0.5, radius2=0.5, depth=1.0)
+        turn = {"X": Matrix.Rotation(math.pi / 2, 4, "Y"), "Y": Matrix.Rotation(math.pi / 2, 4, "X")}.get(part.get("axis", "Z"))
+        if turn is not None:
+            bmesh.ops.transform(bm, matrix=turn, verts=bm.verts)
+
+    elif kind == "sphere":
+        lumpy = float(part.get("lumpy") or 0.0)
+        bmesh.ops.create_icosphere(bm, subdivisions=2, radius=0.5)
+        if lumpy:
+            # A cluster of leaves: each corner pushed in or out a little (seeded), so its outline is uneven.
+            rng = random.Random(part.get("seed", 0))
+            for v in bm.verts:
+                v.co *= 1.0 + rng.uniform(-lumpy, lumpy)
+    elif kind == "prism":
+        # A gable: its ridge along Y (or X), the triangle's base the part's bottom.
+        verts = [
+            bm.verts.new(v)
+            for v in ((-0.5, -0.5, -0.5), (0.5, -0.5, -0.5), (0.0, -0.5, 0.5), (-0.5, 0.5, -0.5), (0.5, 0.5, -0.5), (0.0, 0.5, 0.5))
+        ]
+        a0, a1, a2, b0, b1, b2 = verts
+        for face in ((a0, a2, a1), (b0, b1, b2), (a0, a1, b1, b0), (a1, a2, b2, b1), (a2, a0, b0, b2)):
+            bm.faces.new(face)
+        if part.get("ridge") == "X":
+            bmesh.ops.transform(bm, matrix=Matrix.Rotation(math.pi / 2, 4, "Z"), verts=bm.verts)
+            sx, sy = sx, sy
+    else:
+        bmesh.ops.create_cube(bm, size=1.0)
+    bmesh.ops.scale(bm, vec=(sx, sy, sz), verts=bm.verts)
+    if part.get("tilt"):
+        # A bough: leaning out from the trunk toward `tilt`.
+        tx, ty = part["tilt"]
+        bmesh.ops.transform(bm, matrix=Matrix.Rotation(math.radians(50), 4, Vector((-ty, tx, 0.0))), verts=bm.verts)
+    bmesh.ops.translate(bm, vec=tuple(part["c"]), verts=bm.verts)
+    bmesh.ops.recalc_face_normals(bm, faces=bm.faces)
+    return bm
+
+
+def add_shape(obj: dict, camera_at, coll, material):
+    """A thing's detailed shape (plan's parts) in place of its box: its front (−Y) toward the camera, turned with the
+    box, standing on the box's bottom. Returns its parts' objects (each named and given its material as made)."""
+    p = obj["placed"]
+    turn = 0.0 if p["along"] == "X" else math.pi / 2
+    centre = Vector(p["centreM"])
+    front = Matrix.Rotation(turn, 3, "Z") @ Vector((0, -1, 0))
+    if front.dot(Vector((camera_at[0] - centre.x, camera_at[1] - centre.y, 0.0))) < 0:
+        turn += math.pi
+    holder = bpy.data.objects.new(PREFIX + "thing_" + obj["id"], None)
+    coll.objects.link(holder)
+    holder.matrix_world = Matrix.Translation(centre) @ Matrix.Rotation(turn, 4, "Z")
+    out = []
+    for i, part in enumerate(obj["parts"]):
+        piece = _mesh_object(f"{part['name']}.{obj['id']}.{i:03d}", _part_mesh(part), coll, material)
+        piece.parent = holder
+        piece.matrix_parent_inverse = Matrix.Identity(4)
+        piece["nb_label"] = obj["label"]
+        piece["nb_part"] = part["name"]
+        if part.get("material"):
+            piece["nb_material"] = part["material"]
+            if part["material"] in FOLIAGE and part.get("shape") == "sphere":
+                mark_foliage(piece)
+        out.append(piece)
+    return out
+
+
+#: Names of a place's stand-ins for people (mannequins the modeller left in): not drawn, the figures are the shot's.
+DUMMY_WORDS = ("dummy", "mannequin", "人形", "ダミー")
+
+
+def _is_dummy(name: str) -> bool:
+    low = name.lower()
+    return low.startswith("d_") or any(w in low for w in DUMMY_WORDS)
+
+
+def _hidden(name: str, hide) -> bool:
+    return any(name == h or name.startswith(h) for h in hide or [])
+
+
+def mark_foliage(obj) -> None:
+    """Every face of a crown or a bush marked: its facets give no lines, only its outline (render.py)."""
+    mesh = obj.data
+    attr = mesh.attributes.get("freestyle_face") or mesh.attributes.new("freestyle_face", "BOOLEAN", "FACE")
+    attr.data.foreach_set("value", [True] * len(mesh.polygons))
+    obj["nb_foliage"] = True
+
+
 def add_place(place: dict):
-    """The place's collection from its .blend (appended, so the scene is whole on its own)."""
+    """The place's collection from its .blend (appended, so the scene is whole on its own), without its cameras, its
+    lights (the development lights the scene) and the mannequins left in it; what the author moves is moved, what
+    the author hides is left out. Each mesh's materials get a library material by their names (materials.py)."""
     path = Path(place["file"])
     wanted = place.get("collection") or place["name"]
     with bpy.data.libraries.load(str(path), link=False) as (src, dst):
@@ -460,8 +555,30 @@ def add_place(place: dict):
         if c is not None:
             coll.children.link(c)
     for o in getattr(dst, "objects", []) or []:
-        if o is not None and o.type != "CAMERA":
+        if o is not None:
             coll.objects.link(o)
+    hide = place.get("hide") or []
+    for o in list(coll.all_objects):
+        if o.type in ("CAMERA", "LIGHT") or _is_dummy(o.name) or _hidden(o.name, hide):
+            for c in list(o.users_collection):
+                c.objects.unlink(o)
+    by_name = {o.name: o for o in coll.all_objects}
+    for move in place.get("moves") or []:
+        o = by_name.get(move["object"])
+        if o is None:
+            continue
+        if move.get("positionM"):
+            o.location = Vector(move["positionM"])
+        if move.get("turnDeg") is not None:
+            o.rotation_euler.z = math.radians(move["turnDeg"])
+    for o in coll.all_objects:
+        if o.type != "MESH":
+            continue
+        names = [s.material.name if s.material else "" for s in o.material_slots] or [""]
+        guessed = [guess_part(o.name, n) for n in names]
+        o["nb_place_materials"] = guessed
+        if all(g in FOLIAGE for g in guessed):
+            mark_foliage(o)
     return coll
 
 
@@ -476,14 +593,15 @@ def build(plan: dict) -> dict:
     bg = world.node_tree.nodes.get("Background")
     bg.inputs["Color"].default_value = (1, 1, 1, 1)
     scene.world = world
-    measured = {"objects": {}, "figures": {}, "edges": [], "room": [], "world": world, "panorama": None}
+    measured = {"objects": {}, "figures": {}, "gauges": {}, "edges": [], "room": [], "place": [], "world": world, "panorama": None}
     for band in BANDS:
         band_collection(band)
     if plan.get("ground"):
         measured["edges"].append(add_ground(plan["ground"]))
     if plan.get("place"):
         coll = add_place(plan["place"])
-        measured["edges"] += [o for o in coll.all_objects if o.type == "MESH"]
+        measured["place"] = [o for o in coll.all_objects if o.type == "MESH"]
+        measured["edges"] += measured["place"]
     if plan.get("room"):
         room = add_room(plan["room"])
         measured["room"] = [room]
@@ -504,6 +622,16 @@ def build(plan: dict) -> dict:
                         part.data.materials.append(material)
                 measured["objects"][obj["id"]] = parts
                 continue
+        if plan.get("detail") and obj.get("parts"):
+            parts = add_shape(obj, plan["camera"]["positionM"], band_collection(band), material)
+            for part in parts:
+                part["nb_band"] = band
+            # A shape fills its box, but a roof or a crown leaves the box's corners empty: its range is measured by
+            # the box it was made in (not drawn), the box as the Blockout had it.
+            measured["objects"][obj["id"]] = parts
+            measured["gauges"][obj["id"]] = {"centreM": list(p["centreM"]), "sizeM": list(p["sizeM"]), "along": p["along"]}
+            measured["edges"] += parts
+            continue
         box = add_box(PREFIX + "obj_" + obj["id"], p["centreM"], p["sizeM"], p["along"], band_collection(band), material)
         box["nb_label"] = obj["label"]
         box["nb_band"] = band

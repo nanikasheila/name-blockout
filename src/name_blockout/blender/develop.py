@@ -35,6 +35,7 @@ import bpy
 import numpy as np
 from mathutils import Vector
 
+from ..materials import DEFAULT, LIBRARY
 from .render import render_passes
 from .scene import PREFIX, collection
 
@@ -183,8 +184,23 @@ def _set_materials(built: dict, plan: dict, which: str, ground) -> None:
             # A part of a 素材 the author gave its own material (look.materials by the part's name).
             part = materials.get(_part_name(obj.get("nb_part", "")))
             own = _emission(f"dev_part_{_part_name(obj['nb_part'])}_{which}", grey(part)) if part and part.get("part") else None
+            # A part of a shape the tool made carries its own material (glass, tyres…), unless the author named one.
+            made = LIBRARY.get(obj.get("nb_material", ""))
+            if own is None and made is not None:
+                own = _emission(f"dev_lib_{made.name}_{which}", grey(made.as_dict()))
             obj.data.materials.clear()
             obj.data.materials.append(own or mat)
+    # A place's meshes: each material slot as the library material its names suggest (or the author's, by name).
+    for obj in built.get("place", []):
+        guessed = obj.get("nb_place_materials") or []
+        slots = obj.material_slots
+        if not slots:
+            obj.data.materials.append(None)
+        for i, slot in enumerate(obj.material_slots):
+            name = guessed[i] if i < len(guessed) else DEFAULT
+            m = materials.get(_part_name(obj.name)) or LIBRARY.get(name, LIBRARY[DEFAULT]).as_dict()
+            slot.link = "OBJECT"
+            slot.material = _emission(f"dev_lib_{m['name']}_{which}", grey(m))
     walls = materials.get("walls")
     if walls:
         mat = _emission(f"dev_walls_{which}", grey(walls))
@@ -222,16 +238,33 @@ def develop_passes(plan: dict, built: dict, out_dir: Path, samples: int = 16) ->
     for ls in layer.freestyle_settings.linesets:
         ls.show_render = True
 
+    # Indoors under the ceiling's light, a place's ceilings and roofs (all above the eye) let it through: the light
+    # stands for the lamps in the room, not a sun over the house.
+    if light.get("key") == "interior":
+        eye = plan["camera"].get("positionM", [0, 0, 1.5])[2]
+        for obj in built.get("place", []):
+            if min((obj.matrix_world @ Vector(c)).z for c in obj.bound_box) > eye:
+                obj.visible_shadow = False
+                obj["nb_noshadow"] = True
+
     # 1. 光: white and matte, the sun alone (the sky black), as strong as π so a face square to it is exactly 1.
+    # A wide light (a soft shadow) needs more samples, and the denoiser, or its shadow's edge comes out grainy.
     if sun is not None:
         sun.data.energy = math.pi
+    soft = sun is not None and sun.data.angle > math.radians(5)
+    scene.cycles.use_denoising = True
+    try:
+        scene.cycles.denoiser = "OPENIMAGEDENOISE"
+    except TypeError:
+        scene.cycles.use_denoising = False
     dark = bpy.data.worlds.new(PREFIX + "dark")
     dark.use_nodes = True
     dark.node_tree.nodes["Background"].inputs["Strength"].default_value = 0.0
     scene.world = dark
     scene.cycles.max_bounces = 0
     layer.material_override = _white_matte()
-    lit = _render(out_dir / "光.png", samples)
+    lit = _render(out_dir / "光.png", samples * 4 if soft else samples)
+    scene.cycles.use_denoising = False
     layer.material_override = None
     alpha = lit[..., 3]
     word = light.get("timeOfDay")
