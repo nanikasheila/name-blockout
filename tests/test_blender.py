@@ -557,3 +557,18 @@ def test_a_step_edge_is_not_a_joint():
     out = grey_joints(lines, up, 3, height)
     assert out[20, 10, 0] == 0.0 and out[20, 10, 3] == 1.0
     assert out[5, 40, 0] > 0.2 and out[30, 40, 0] > 0.2
+
+
+@needs_blender
+def test_device_cpu_when_asked_or_no_gpu(monkeypatch):
+    from name_blockout.blender import render
+
+    monkeypatch.setenv(render.DEVICE_ENV, "cpu")
+    monkeypatch.setattr(render, "_chosen", None)
+    assert render.choose_device() == "CPU"
+    monkeypatch.setenv(render.DEVICE_ENV, "auto")
+    monkeypatch.setattr(render, "_chosen", "GPU")  # as if a GPU were found
+    assert render.choose_device(1098 * 482) == "CPU"  # a 150 dpi panel: readying the GPU costs more
+    assert render.choose_device(4394 * 1928) == "GPU"
+    monkeypatch.setattr(render, "_chosen", None)
+    assert render.choose_device() in ("CPU", "GPU")

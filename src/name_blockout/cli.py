@@ -52,6 +52,28 @@ def _values(pairs: list[str]) -> dict:
     return out
 
 
+def full_speed(child: subprocess.Popen) -> bool:
+    """On Windows, keep the Blender we started out of power throttling (EcoQoS): a background process without a
+    window may be put on the efficiency cores at a low clock, and draws 2–3 times slower. Elsewhere nothing."""
+    if sys.platform != "win32":
+        return False
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        class Throttling(ctypes.Structure):
+            _fields_ = [("Version", wintypes.ULONG), ("ControlMask", wintypes.ULONG), ("StateMask", wintypes.ULONG)]
+
+        process_power_throttling = 4  # PROCESS_INFORMATION_CLASS.ProcessPowerThrottling
+        execution_speed = 0x1  # PROCESS_POWER_THROTTLING_EXECUTION_SPEED
+        state = Throttling(1, execution_speed, 0)  # controlled, and off
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        handle = wintypes.HANDLE(int(child._handle))  # type: ignore[attr-defined]
+        return bool(kernel32.SetProcessInformation(handle, process_power_throttling, ctypes.byref(state), ctypes.sizeof(state)))
+    except (OSError, AttributeError, ValueError):
+        return False
+
+
 def find_blender() -> str | None:
     """Blender's program: NAME_BLOCKOUT_BLENDER, then on PATH, then the usual place on Windows (the newest)."""
     given = os.environ.get("NAME_BLOCKOUT_BLENDER")
@@ -198,7 +220,9 @@ def cmd_blockout(a) -> int:
             return 2
         run = Path(__file__).resolve().parent / "blender" / "run.py"
         argv = [blender, "-b", "--factory-startup", "--python", str(run), "--"] + a.raw
-        return subprocess.call(argv)
+        child = subprocess.Popen(argv)
+        full_speed(child)
+        return child.wait()
     from .pipeline import run_blockout
 
     reports = run_blockout(

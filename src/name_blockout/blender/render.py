@@ -138,11 +138,67 @@ def _show_only_far(only_far: bool) -> None:
         ls.show_render = not only_far or ls.name.startswith("NB_lines_far")
 
 
+#: Which Cycles device draws: "auto" (a GPU when there is one and the picture is large, else the CPU), "cpu" or
+#: "gpu" (NAME_BLOCKOUT_DEVICE).
+DEVICE_ENV = "NAME_BLOCKOUT_DEVICE"
+GPU_TYPES = ("OPTIX", "CUDA", "HIP", "METAL", "ONEAPI")
+_chosen: str | None = None
+#: Under this many pixels "auto" keeps the CPU: readying the GPU (2–3 s) costs more than it saves (a 150 dpi panel).
+GPU_MIN_PIXELS = 4_000_000
+
+
+def choose_device(pixels: int | None = None) -> str:
+    """'GPU' with the first GPU backend that has a device (all its devices on), else 'CPU'; with "auto", a picture
+    smaller than GPU_MIN_PIXELS on the CPU. The GPU looked for once a run."""
+    import os
+
+    if os.environ.get(DEVICE_ENV, "auto").lower() == "auto" and pixels is not None and pixels < GPU_MIN_PIXELS:
+        return "CPU"
+    return _find_gpu()
+
+
+def _find_gpu() -> str:
+    global _chosen
+    if _chosen is not None:
+        return _chosen
+    import os
+
+    want = os.environ.get(DEVICE_ENV, "auto").lower()
+    _chosen = "CPU"
+    if want == "cpu":
+        return _chosen
+    try:
+        prefs = bpy.context.preferences.addons["cycles"].preferences
+    except (KeyError, AttributeError):
+        return _chosen
+    for kind in GPU_TYPES:
+        try:
+            prefs.compute_device_type = kind
+        except TypeError:
+            continue  # not built in this Blender
+        prefs.get_devices()
+        devices = [d for d in prefs.devices if d.type == kind]
+        if devices:
+            for d in prefs.devices:
+                d.use = d.type == kind
+            _chosen = "GPU"
+            print(f"name-blockout: Cycles を GPU（{kind}: {', '.join(d.name for d in devices)}）で描きます")
+            return _chosen
+    try:
+        prefs.compute_device_type = "NONE"
+    except TypeError:
+        pass
+    if want == "gpu":
+        print("name-blockout: GPU が見つからないので CPU で描きます")
+    return _chosen
+
+
 def render_passes(plan: dict, out_dir: Path, passes=("完成", "線画", "トーン"), samples: int = 6, crowns: bool = True) -> dict:
     """The passes as PNGs; `crowns` False: the 線画 without the crowns' lines (the development draws them itself)."""
     scene = bpy.context.scene
     scene.render.engine = "CYCLES"
-    scene.cycles.device = "CPU"
+    w, h = plan["render"]["sizePx"]
+    scene.cycles.device = choose_device(w * h)
     scene.cycles.samples = samples
     scene.cycles.use_denoising = False
     scene.cycles.use_adaptive_sampling = False
@@ -151,7 +207,6 @@ def render_passes(plan: dict, out_dir: Path, passes=("完成", "線画", "トー
     scene.render.image_settings.color_mode = "RGBA"
     scene.view_settings.view_transform = "Standard"
     scene.view_settings.look = "None"
-    w, h = plan["render"]["sizePx"]
     scene.render.resolution_x, scene.render.resolution_y = w, h
     _freestyle(scene, plan["render"]["dpi"])
     layer = bpy.context.view_layer
