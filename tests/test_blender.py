@@ -296,6 +296,10 @@ def _house_blend(folder: Path) -> None:
         "VAN": ((400, 0, 1), (4.5, 1.8, 2), "Paint"),
         "Sign_board": ((3, 8, 1), (1, 0.1, 1), "Paint"),
         "D_Aunt": ((1, 5, 0.8), (0.4, 0.3, 1.6), "Skin"),
+        "Old_take": ((-3, 8, 1), (1, 1, 2), "Paint"),
+        "Solar_panel": ((2, 6, 3.4), (3, 2, 0.05), "Panel"),
+        # A loft's floor under the camera: the room's floor is still the one below it.
+        "Loft": ((0, 0, 0.95), (2, 2, 0.1), "Wood"),
     }
     for name, (centre, size, mat) in boxes.items():
         mesh = bpy.data.meshes.new(name)
@@ -304,6 +308,11 @@ def _house_blend(folder: Path) -> None:
         mesh.from_pydata(verts, [], [(0, 1, 3, 2), (4, 6, 7, 5), (0, 4, 5, 1), (2, 3, 7, 6), (0, 2, 6, 4), (1, 5, 7, 3)])
         mesh.materials.append(bpy.data.materials.new(mat))
         coll.objects.link(bpy.data.objects.new(name, mesh))
+    bpy.data.objects["Old_take"].hide_render = True
+    bpy.data.objects["VAN"].hide_render = True
+    van_paint = bpy.data.materials["Paint"]
+    van_paint.use_nodes = True
+    van_paint.node_tree.nodes["Principled BSDF"].inputs["Base Color"].default_value = (0.01, 0.01, 0.012, 1.0)
     # A shell: a wall and the ceiling over it in one mesh (as models often are).
     shell = bpy.data.meshes.new("Shell")
     shell.from_pydata([(-6, 14, 0), (6, 14, 0), (6, 14, 2.6), (-6, 14, 2.6), (-6, 2, 2.6), (6, 2, 2.6)], [], [(0, 1, 2, 3), (3, 2, 5, 4)])
@@ -334,7 +343,11 @@ def test_develop_in_a_place(tmp_path):
     shot = data["shots"][0]
     shot["objects"], shot["figures"] = [], []
     shot["camera"] = {"heightM": 1.5, "positionM": [0, 0, 1.5]}
-    shot["place"] = {"asset": "家", "moves": [{"object": "VAN", "positionM": [8.4, -18.7, 1], "turnDeg": 90}], "hide": ["Sign"]}
+    shot["place"] = {
+        "asset": "家",
+        "moves": [{"object": "VAN", "positionM": [8.4, -18.7, 1], "turnDeg": 90, "show": True}],
+        "hide": ["Sign"],
+    }
     shot["look"]["materials"] = []
     shot["output"] = {"take": "1"}
     (tmp_path / "指示.json").write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
@@ -355,6 +368,9 @@ def test_develop_in_a_place(tmp_path):
     van = bpy.data.objects["VAN"]
     assert tuple(round(v, 3) for v in van.location) == (8.4, -18.7, 1.0) and abs(van.rotation_euler.z - 1.5708) < 1e-3
     assert bpy.data.objects["Roof"]["nb_place_materials"] == ["瓦"] and bpy.data.objects["Tree_leaves"].get("nb_foliage")
+    # Left out of the .blend's renders: not in the place (unless shown); a dark paint is ベタ; panels outline only.
+    assert "Old_take" not in names and not van.hide_render and van["nb_place_materials"] == ["黒い塗装"]
+    assert bpy.data.objects["Solar_panel"].get("nb_foliage")
     assert "NB_lines_near_foliage" in [ls.name for ls in bpy.context.view_layer.freestyle_settings.linesets]
 
     shot["look"] = {"setting": "indoor", "light": {"key": "interior"}}

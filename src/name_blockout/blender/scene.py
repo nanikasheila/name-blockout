@@ -17,7 +17,7 @@ import bpy
 from mathutils import Matrix, Vector
 
 from ..far import BANDS, TONE_LIFT
-from ..materials import DEFAULT, FOLIAGE, guess_part
+from ..materials import DEFAULT, FINE_WORDS, FOLIAGE, guess_part
 
 PREFIX = "NB_"
 #: Which light the tones take (from above, in front, a little left of the camera's usual view).
@@ -561,6 +561,25 @@ def mark_foliage(obj, faces=None) -> None:
     obj["nb_foliage"] = True
 
 
+#: A material darker than this (its base colour's brightness, 0…1 as shown) is drawn as ベタ.
+DARK_PAINT = 0.12
+
+
+def _brightness(mat) -> float:
+    """How bright a material's base colour shows (the Principled BSDF's Base Color, else its viewport colour)."""
+    colour = None
+    if mat.use_nodes and mat.node_tree:
+        for node in mat.node_tree.nodes:
+            if node.type == "BSDF_PRINCIPLED" and not node.inputs["Base Color"].is_linked:
+                colour = node.inputs["Base Color"].default_value
+                break
+    if colour is None:
+        colour = mat.diffuse_color
+    r, g, b = colour[0], colour[1], colour[2]
+    linear = 0.2126 * r + 0.7152 * g + 0.0722 * b
+    return 12.92 * linear if linear <= 0.0031308 else 1.055 * linear ** (1 / 2.4) - 0.055
+
+
 def add_place(place: dict):
     """The place's collection from its .blend (appended, so the scene is whole on its own), without its cameras, its
     lights (the development lights the scene) and the mannequins left in it; what the author moves is moved, what
@@ -595,15 +614,36 @@ def add_place(place: dict):
             o.location = Vector(move["positionM"])
         if move.get("turnDeg") is not None:
             o.rotation_euler.z = math.radians(move["turnDeg"])
+        if move.get("show"):
+            for shown in (o, *o.children_recursive):
+                shown.hide_render = False
+    # What the .blend leaves out of its renders (a van switched off for some takes) is not part of the place, unless
+    # the author shows it (moves[].show): else it would cast shadows in the check that the picture does not show.
+    for o in list(coll.all_objects):
+        if o.hide_render:
+            for c in list(o.users_collection):
+                c.objects.unlink(o)
     for o in coll.all_objects:
         if o.type != "MESH":
             continue
-        names = [s.material.name if s.material else "" for s in o.material_slots] or [""]
-        # The object's own name and its material's first, then its collections' (H_plants, 植栽…) as a fallback.
+        slots = [s.material for s in o.material_slots] or [None]
+        # The object's own name and its material's first, then its collections' (H_plants, 植栽…) as a fallback; a
+        # paint the modeller made very dark is ベタ whatever its name (a black van's body).
         groups = [c.name for c in o.users_collection]
-        guessed = [guess_part(o.name, n) if guess_part(o.name, n) != DEFAULT else guess_part(o.name, n, *groups) for n in names]
+        guessed = []
+        for mat in slots:
+            n = mat.name if mat else ""
+            g = guess_part(o.name, n)
+            if g == DEFAULT:
+                g = guess_part(o.name, n, *groups)
+            if mat is not None and g not in ("ガラス",) and _brightness(mat) < DARK_PAINT:
+                g = "黒い塗装"
+            guessed.append(g)
         o["nb_place_materials"] = guessed
         leafy = [g in FOLIAGE for g in guessed]
+        text = " ".join([o.name] + [m.name for m in slots if m]).lower()
+        if any(w in text for w in FINE_WORDS):
+            leafy = [True] * len(leafy)
         if any(leafy):
             mark_foliage(o, [leafy[min(poly.material_index, len(leafy) - 1)] for poly in o.data.polygons])
     return coll

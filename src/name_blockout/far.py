@@ -143,7 +143,8 @@ def trees(camera: Camera, layer: dict, span: tuple[float, float]) -> dict:
         for _ in range(clump):
             height = rng.uniform(lo, hi)
             radius = height * rng.uniform(0.22, 0.35)
-            dist = d * rng.uniform(0.92, 1.12)
+            # Some nearer, some farther (rows of trees, not a fence of them).
+            dist = d * rng.uniform(0.75, 1.6)
             x, y = _at(camera, a, dist)
             form = "conifer" if rng.random() < layer.get("conifers", 0.2) else "broad"
             out.append(
