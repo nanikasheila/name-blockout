@@ -22,10 +22,10 @@ import bpy
 from ..far import BANDS, LINE_SCALE
 from .scene import PREFIX, holdout_material
 
-#: A pen's widths, in mm on the page (a 0.18 mm outline, 0.11 mm inside it, as a background's fine liners), and
+#: A pen's widths, in mm on the page (a 0.2 mm outline, 0.13 mm inside it, as a background's fine liners), and
 #: the thinnest drawn in pixels (a small picture would lose them).
-OUTLINE_MM = 0.18
-INNER_MM = 0.11
+OUTLINE_MM = 0.2
+INNER_MM = 0.13
 MIN_OUTLINE_PX = 1.4
 MIN_INNER_PX = 0.9
 #: The ground's grid: its lines thin and grey.
@@ -138,7 +138,8 @@ def _show_only_far(only_far: bool) -> None:
         ls.show_render = not only_far or ls.name.startswith("NB_lines_far")
 
 
-def render_passes(plan: dict, out_dir: Path, passes=("完成", "線画", "トーン"), samples: int = 6) -> dict:
+def render_passes(plan: dict, out_dir: Path, passes=("完成", "線画", "トーン"), samples: int = 6, crowns: bool = True) -> dict:
+    """The passes as PNGs; `crowns` False: the 線画 without the crowns' lines (the development draws them itself)."""
     scene = bpy.context.scene
     scene.render.engine = "CYCLES"
     scene.cycles.device = "CPU"
@@ -170,6 +171,10 @@ def render_passes(plan: dict, out_dir: Path, passes=("完成", "線画", "トー
             continue
         far = cfg.get("far", False)
         _show_only_far(far)
+        if not crowns and name == "線画":
+            for ls in layer.freestyle_settings.linesets:
+                if "_foliage" in ls.name:
+                    ls.show_render = False
         scene.world = panorama if (far and panorama) else white
         scene.render.film_transparent = cfg["transparent"]
         scene.render.use_freestyle = cfg["lines"]

@@ -17,7 +17,7 @@ import bpy
 from mathutils import Matrix, Vector
 
 from ..far import BANDS, TONE_LIFT
-from ..materials import DEFAULT, FINE_WORDS, FOLIAGE, guess_part
+from ..materials import CELL_WORDS, DEFAULT, FINE_WORDS, FOLIAGE, guess_part
 
 PREFIX = "NB_"
 #: Which light the tones take (from above, in front, a little left of the camera's usual view).
@@ -702,6 +702,8 @@ def add_place(place: dict):
         text = " ".join([o.name] + [m.name for m in slots if m]).lower()
         if any(w in text for w in FINE_WORDS):
             leafy = [True] * len(leafy)
+        if any(w in text for w in CELL_WORDS):
+            o["nb_cells"] = True
         if any(leafy):
             mark_foliage(o, [leafy[min(poly.material_index, len(leafy) - 1)] for poly in o.data.polygons])
     return coll

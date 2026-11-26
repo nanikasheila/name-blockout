@@ -384,6 +384,9 @@ def test_develop_in_a_place(tmp_path):
     # Left out of the .blend's renders: not in the place (unless shown); a dark paint is ベタ; panels outline only.
     assert "Old_take" not in names and not van.hide_render and van["nb_place_materials"] == ["黒い塗装"]
     assert bpy.data.objects["Solar_panel"].get("nb_foliage")
+    # …its cells a grid in its tone.
+    panel = bpy.data.objects["Solar_panel"]
+    assert panel.get("nb_cells") and panel.material_slots[0].material.name.startswith("NB_dev_cells_"), panel.material_slots[0].material
     # A large flat lawn is ground: white, not the grass's grey.
     assert bpy.data.objects["Floor"]["nb_place_materials"] == ["白地"]
     assert bpy.data.objects["site_ground"]["nb_place_materials"] == ["白地"] and not bpy.data.objects["site_ground"].get("nb_foliage")
@@ -457,6 +460,29 @@ def test_a_joint_greys_up_to_the_wall_and_a_narrow_beta_keeps_black_lines():
     lines = np.zeros((h, w, 4), dtype=np.float32)
     lines[13, 5:55, 3] = 1.0
     assert white_on_beta(lines, tone, 2)[13, 30, 0] == 0.0
+
+
+@needs_blender
+def test_crown_outlines_unbroken_on_the_front_crown():
+    """A crown is outlined all round where it stands before the sky or another crown (the line on its own side), not
+    inside; the crown behind gets no line where the front one covers it."""
+    import numpy as np
+
+    from name_blockout.blender.develop import crown_lines
+
+    h, w = 60, 80
+    crowns = np.zeros((h, w, 4), dtype=np.float32)
+    yy, xx = np.mgrid[0:h, 0:w]
+    back = (yy - 30) ** 2 + (xx - 50) ** 2 < 20**2
+    front = (yy - 30) ** 2 + (xx - 30) ** 2 < 15**2
+    crowns[back] = (0.4, 20.0, 1.0, 1.0)
+    crowns[front] = (0.8, 10.0, 1.0, 1.0)
+    out = crown_lines(crowns, 3.0, 2.0, 1000.0)
+    ink = out[..., 3] > 0.5
+    assert ink[30, 15] and ink[30, 45 - 1]  # the front crown's left and right (over the back crown) edges
+    assert ink[30, 69]  # the back crown's edge against the sky
+    assert not ink[30, 30] and not ink[30, 55]  # inside the crowns
+    assert not ink[30, 46 + 2]  # on the back crown, just past the front one: its line is on the front's side
 
 
 @needs_blender

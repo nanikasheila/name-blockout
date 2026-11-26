@@ -156,6 +156,8 @@ FOLIAGE = ("草",)
 #: Words of things too fine to draw line by line at a name's size (a solar panel's cells, a louvre): their outline
 #: only, the rest left to the tone.
 FINE_WORDS = ("solar", "louver", "louvre", "grating", "grille", "mesh", "ソーラー", "ルーバー")
+#: Words of a solar panel: its cells drawn as a grid in its tone (develop.py).
+CELL_WORDS = ("solar", "pv_panel", "photovoltaic", "ソーラー", "太陽光")
 
 
 def guess_part(*names: str) -> str:

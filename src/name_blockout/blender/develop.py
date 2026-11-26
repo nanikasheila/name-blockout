@@ -35,6 +35,7 @@ import bpy
 import numpy as np
 from mathutils import Vector
 
+from ..far import BANDS, LINE_SCALE
 from ..materials import DEFAULT, LIBRARY
 from .render import inner_px, line_px, render_passes
 from .scene import PREFIX, collection
@@ -83,6 +84,85 @@ def _emission(name: str, grey: float):
     emit.inputs["Color"].default_value = (grey, grey, grey, 1.0)
     links.new(emit.outputs[0], out.inputs[0])
     return mat
+
+
+#: A solar panel's cell (m), the share of a cell its joint takes, how much darker the joint is (density), and the
+#: least a cell may show (px): smaller, cells are drawn by twos (fours…), as an artist simplifies a far roof.
+CELL_M = 0.16
+CELL_JOINT = 0.1
+CELL_DARKER = 0.25
+CELL_MIN_PX = 7.0
+
+
+def _cells(name: str, grey: float, joint: float, axes: tuple[int, int], size: tuple[float, float], start=(0.0, 0.0)):
+    """A flat tone with a grid of joints over it (a solar panel's cells), along two of the mesh's own axes, from
+    the panel's corner (`start`, in the mesh's units)."""
+    mat = bpy.data.materials.get(PREFIX + name) or bpy.data.materials.new(PREFIX + name)
+    mat.use_nodes = True
+    nodes, links = mat.node_tree.nodes, mat.node_tree.links
+    nodes.clear()
+    out = nodes.new("ShaderNodeOutputMaterial")
+    coords = nodes.new("ShaderNodeTexCoord")
+    split = nodes.new("ShaderNodeSeparateXYZ")
+    links.new(coords.outputs["Object"], split.inputs[0])
+    on_joint = None
+    for axis, cell, first in zip(axes, size, start):
+        moved = nodes.new("ShaderNodeMath")
+        moved.operation = "SUBTRACT"
+        moved.inputs[1].default_value = first
+        links.new(split.outputs["XYZ"[axis]], moved.inputs[0])
+        scaled = nodes.new("ShaderNodeMath")
+        scaled.operation = "DIVIDE"
+        scaled.inputs[1].default_value = cell
+        links.new(moved.outputs[0], scaled.inputs[0])
+        frac = nodes.new("ShaderNodeMath")
+        frac.operation = "FRACT"
+        links.new(scaled.outputs[0], frac.inputs[0])
+        near = nodes.new("ShaderNodeMath")
+        near.operation = "LESS_THAN"
+        near.inputs[1].default_value = CELL_JOINT
+        links.new(frac.outputs[0], near.inputs[0])
+        if on_joint is None:
+            on_joint = near
+        else:
+            either = nodes.new("ShaderNodeMath")
+            either.operation = "MAXIMUM"
+            links.new(on_joint.outputs[0], either.inputs[0])
+            links.new(near.outputs[0], either.inputs[1])
+            on_joint = either
+    mix = nodes.new("ShaderNodeMix")
+    mix.data_type = "RGBA"
+    mix.inputs["A"].default_value = (grey, grey, grey, 1.0)
+    mix.inputs["B"].default_value = (joint, joint, joint, 1.0)
+    links.new(on_joint.outputs[0], mix.inputs["Factor"])
+    emit = nodes.new("ShaderNodeEmission")
+    links.new(mix.outputs["Result"], emit.inputs["Color"])
+    links.new(emit.outputs[0], out.inputs[0])
+    return mat
+
+
+def cell_grid(obj, scene):
+    """The panel's two long axes (its mesh's), a cell's size along them in the mesh's units (cells grouped by twos
+    until one shows at least CELL_MIN_PX, the panel split evenly) and its corner; None if it has no face to speak of."""
+    lo = [min(c[i] for c in obj.bound_box) for i in range(3)]
+    hi = [max(c[i] for c in obj.bound_box) for i in range(3)]
+    scale = obj.matrix_world.to_scale()
+    extent = [(hi[i] - lo[i]) * abs(scale[i]) for i in range(3)]
+    axes = tuple(sorted(sorted(range(3), key=lambda i: -extent[i])[:2]))
+    if min(extent[a] for a in axes) < CELL_M:
+        return None
+    cell = CELL_M
+    cam = scene.camera
+    if cam is not None and cam.data.type == "PERSP":
+        f_px = scene.render.resolution_x * cam.data.lens / cam.data.sensor_width
+        centre = obj.matrix_world @ Vector([(lo[i] + hi[i]) / 2 for i in range(3)])
+        d = max((centre - cam.matrix_world.translation).length, 0.1)
+        while f_px * cell / d < CELL_MIN_PX and cell < 2.0:
+            cell *= 2
+    # Whole cells across the panel (a panel's cells fill it), each near `cell`; the first joint just inside its edge.
+    size = tuple((hi[a] - lo[a]) / max(1, round(extent[a] / cell)) for a in axes)
+    start = tuple(lo[a] - size[i] * CELL_JOINT / 2 for i, a in enumerate(axes))
+    return axes, size, start
 
 
 def _srgb(linear: float) -> float:
@@ -221,7 +301,13 @@ def _set_materials(built: dict, plan: dict, which: str, ground) -> None:
             name = guessed[i] if i < len(guessed) else DEFAULT
             m = materials.get(_part_name(obj.name)) or LIBRARY.get(name, LIBRARY[DEFAULT]).as_dict()
             slot.link = "OBJECT"
-            slot.material = _emission(f"dev_lib_{m['name']}_{which}", grey(m))
+            # A solar panel: its cells' grid in the tone (too fine for the pen at a name's size).
+            grid = cell_grid(obj, bpy.context.scene) if obj.get("nb_cells") and not m["beta"] else None
+            if grid:
+                joint = _linear(max(0.0, 1.0 - m[which] - CELL_DARKER))
+                slot.material = _cells(f"dev_cells_{obj.name}_{i}_{which}", grey(m), joint, *grid)
+            else:
+                slot.material = _emission(f"dev_lib_{m['name']}_{which}", grey(m))
     walls = materials.get("walls")
     if walls:
         mat = _emission(f"dev_walls_{which}", grey(walls))
@@ -253,7 +339,7 @@ def develop_passes(plan: dict, built: dict, out_dir: Path, samples: int = 16) ->
     # 線画 (and 遠景) as in the Blockout, without the light's ground.
     collection("light_ground").hide_render = True
     passes = [p for p in ("線画", "遠景") if p in plan["render"]["passes"]]
-    files = render_passes(plan, out_dir, passes=passes)
+    files = render_passes(plan, out_dir, passes=passes, crowns=False)
     collection("light_ground").hide_render = False
     # The grid lies on the same plane as the light's ground: the two would shade each other black.
     grid = bpy.data.collections.get(PREFIX + "ground")
@@ -325,6 +411,14 @@ def develop_passes(plan: dict, built: dict, out_dir: Path, samples: int = 16) ->
     # …and how high each pixel's surface is: a step's edge has up on both sides too, at two heights.
     layer.material_override = _height()
     height = _render(out_dir / "_height.exr", 1, exact=True)[..., 0] - HEIGHT_OFFSET
+    # …and which crown (or bush) each pixel shows, how far it is and how thick its band's pen: their outlines are
+    # drawn from this (Freestyle breaks a lumpy crown's outline into bits).
+    for band in BANDS:
+        for o in collection("band_" + band).all_objects:
+            o["nb_line_scale"] = LINE_SCALE[band]
+    mark_crowns(built)
+    layer.material_override = _crowns()
+    crowns = _render(out_dir / "_crowns.exr", 1, exact=True)
     layer.material_override = None
 
     # 3. Put together; at dawn, dusk and night the sky is toned too.
@@ -346,10 +440,11 @@ def develop_passes(plan: dict, built: dict, out_dir: Path, samples: int = 16) ->
     reach = max(2, round(line_px(dpi) * 1.2))
     if "線画" in files:
         lines = grey_joints(lines, up, reach, height, thin=int(inner_px(dpi) // 3), tip=math.ceil(line_px(dpi) / 2) + 1)
+        lines = _over(crown_lines(crowns, line_px(dpi), inner_px(dpi), _focal_px(scene)), lines)
         _save(files["線画"], lines)
     files["完成"] = _save(out_dir / "完成.png", _over(white_on_beta(lines, tone, reach), _over(tone, white)))
     check = shadow_check(plan, built, shadow, lit, sun)
-    for name in ("_lit.png", "_shadow.png", "_up.png", "_height.exr"):
+    for name in ("_lit.png", "_shadow.png", "_up.png", "_height.exr", "_crowns.exr"):
         (out_dir / name).unlink(missing_ok=True)
     if grid is not None:
         grid.hide_render = False
@@ -396,12 +491,127 @@ def split_above(obj, z: float):
         bm.free()
     piece = bpy.data.objects.new(obj.name + "_above", top)
     piece.matrix_world = mw.copy()
-    for k in ("nb_place_materials", "nb_foliage"):
+    for k in ("nb_place_materials", "nb_foliage", "nb_cells"):
         if k in obj:
             piece[k] = obj[k]
     for coll in obj.users_collection:
         coll.objects.link(piece)
     return piece
+
+
+#: Within one crown, a lump is drawn round where the one behind it is farther by this share of the distance, and
+#: by this many pixels' worth (a lump's curve turning away is not an outline).
+LUMP_DEPTH = 0.015
+LUMP_PIXELS = 25.0
+
+
+def _crowns():
+    """A material showing, on a crown's or bush's faces (marked freestyle_face), its tree (a number in 0.1–1), the
+    distance from the camera and its band's line scale; elsewhere 0 (to be read back exactly)."""
+    mat = bpy.data.materials.get(PREFIX + "crowns") or bpy.data.materials.new(PREFIX + "crowns")
+    mat.use_nodes = True
+    nodes, links = mat.node_tree.nodes, mat.node_tree.links
+    nodes.clear()
+    out = nodes.new("ShaderNodeOutputMaterial")
+    info = nodes.new("ShaderNodeAttribute")
+    info.attribute_type = "OBJECT"
+    info.attribute_name = "nb_crown"
+    marked = nodes.new("ShaderNodeAttribute")
+    marked.attribute_type = "GEOMETRY"
+    marked.attribute_name = "freestyle_face"
+    scale = nodes.new("ShaderNodeAttribute")
+    scale.attribute_type = "OBJECT"
+    scale.attribute_name = "nb_line_scale"
+    cam = nodes.new("ShaderNodeCameraData")
+    ident = nodes.new("ShaderNodeMath")
+    ident.operation = "MULTIPLY_ADD"
+    ident.inputs[1].default_value = 0.9
+    ident.inputs[2].default_value = 0.1
+    links.new(info.outputs["Fac"], ident.inputs[0])
+    on = nodes.new("ShaderNodeMath")
+    on.operation = "MULTIPLY"
+    links.new(ident.outputs[0], on.inputs[0])
+    links.new(marked.outputs["Fac"], on.inputs[1])
+    rgb = nodes.new("ShaderNodeCombineXYZ")
+    links.new(on.outputs[0], rgb.inputs[0])
+    links.new(cam.outputs["View Distance"], rgb.inputs[1])
+    links.new(scale.outputs["Fac"], rgb.inputs[2])
+    emit = nodes.new("ShaderNodeEmission")
+    links.new(rgb.outputs[0], emit.inputs["Color"])
+    links.new(emit.outputs[0], out.inputs[0])
+    return mat
+
+
+def mark_crowns(built: dict) -> None:
+    """Each object's crown (nb_crown, 0–1): one per tree (a thing of the plan, or a place's object with its
+    children), so a tree's lumps are one crown, outlined round the whole and inside only where one stands well before
+    another."""
+    import zlib
+
+    def number(key: str) -> float:
+        return (zlib.crc32(key.encode("utf-8")) % 9973) / 9973.0
+
+    for ident, objs in built.get("objects", {}).items():
+        for o in objs:
+            for part in (o, *o.children_recursive):
+                part["nb_crown"] = number("thing:" + ident)
+    for o in bpy.context.scene.objects:
+        if "nb_crown" in o:
+            continue
+        root = o
+        while root.parent is not None:
+            root = root.parent
+        o["nb_crown"] = number("object:" + root.name)
+
+
+def _focal_px(scene) -> float:
+    cam = scene.camera
+    if cam is None or cam.data.type != "PERSP":
+        return 1000.0
+    return scene.render.resolution_x * cam.data.lens / cam.data.sensor_width
+
+
+def crown_lines(crowns: np.ndarray, outline: float, inner: float, focal_px: float) -> np.ndarray:
+    """Black lines round each crown where it stands before something else (another crown, a thing, the sky) at its
+    band's outline width, and round a lump before a farther lump of the same crown at the inner width; drawn on the
+    crown's side, softened at their edges."""
+    ident, dist, scale = crowns[..., 0], crowns[..., 1], crowns[..., 2]
+    alpha = crowns[..., 3] > 0.5
+    crown = (ident > 0.05) & alpha
+    dist = np.where(alpha, dist, np.inf)
+    h, w = ident.shape
+    outer = np.zeros((h, w), dtype=bool)
+    lump = np.zeros((h, w), dtype=bool)
+    for dy, dx in ((0, 1), (0, -1), (1, 0), (-1, 0)):
+        shifted = (slice(max(dy, 0), h + min(dy, 0)), slice(max(dx, 0), w + min(dx, 0)))
+        source = (slice(max(-dy, 0), h + min(-dy, 0)), slice(max(-dx, 0), w + min(-dx, 0)))
+        here, there = ident[source], ident[shifted]
+        near, far = dist[source], dist[shifted]
+        mine = crown[source]
+        behind = far > near
+        other = np.abs(here - there) > 1e-4
+        with np.errstate(invalid="ignore"):  # the sky behind the sky: inf − inf
+            step = (far - near) > np.maximum(LUMP_DEPTH * near, LUMP_PIXELS * near / max(focal_px, 1.0))
+        outer[source] |= mine & behind & other
+        lump[source] |= mine & behind & ~other & step
+    out = np.zeros((h, w, 4), dtype=np.float32)
+    ink = np.zeros((h, w), dtype=np.float32)
+    for mask, width in ((lump, inner), (outer, outline)):
+        for s in np.unique(np.round(scale[mask], 2)):
+            r = max(0, round(max(0.75, width * s) / 2 - 0.5))
+            pen = mask & (np.abs(scale - s) < 0.006)
+            drawn = grow(pen, r) if r else pen
+            # A small blur (¼ ½ ¼) smooths the pixels' stairs; a one-pixel line keeps its full black in its middle.
+            soft = drawn.astype(np.float32)
+            for axis in (0, 1):
+                padded = np.pad(soft, [(1, 1) if a == axis else (0, 0) for a in (0, 1)], mode="edge")
+                lo = padded[:-2] if axis == 0 else padded[:, :-2]
+                mid = padded[1:-1] if axis == 0 else padded[:, 1:-1]
+                hi = padded[2:] if axis == 0 else padded[:, 2:]
+                soft = 0.25 * lo + 0.5 * mid + 0.25 * hi
+            ink = np.maximum(ink, np.minimum(1.0, soft * (2.0 if r == 0 else 1.0)))
+    out[..., 3] = ink
+    return out
 
 
 def _facing_up():
