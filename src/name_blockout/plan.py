@@ -209,7 +209,7 @@ def build_plan(data: dict, shot: dict, instruction_path: str | Path | None = Non
             "vanishingAxes": vp_axes,
         },
         "ground": None if use_place else (_floor(room) if room else _ground(camera, render_frame.dpi / frame.dpi, objects + figures)),
-        "place": _asset_entry(place_asset, assets_dir) if use_place else None,
+        "place": _place_entry(place_asset, assets_dir, place) if use_place else None,
         "room": room,
         "references": _references(camera) if (camera.points >= 3 and not objects and not use_place and not room) else [],
         "objects": objects,
@@ -353,6 +353,22 @@ DEVELOP_DPI = 300
 TOWN_KINDS = {"house", "building", "shed", "van", "car", "truck", "bus", "pole", "fence", "wall"}
 
 
+def _place_entry(asset, assets_dir, place: dict) -> dict:
+    """The place's file, with what the author moves or hides in it (by the objects' names in the .blend)."""
+    entry = _asset_entry(asset, assets_dir)
+    for key in ("moves", "hide"):
+        if place.get(key):
+            entry[key] = place[key]
+    return entry
+
+
+def horizon_in_frame(plan: dict) -> bool:
+    """Whether the eye level crosses the picture (then what lies beyond the place shows)."""
+    t = plan.get("targets") or {}
+    rows, (_, height) = t.get("horizonPx"), t.get("sizePx") or (0, 0)
+    return bool(rows) and any(0 <= y <= height for y in rows)
+
+
 def default_far(shot: dict) -> list[dict]:
     """Far layers for a place outdoors whose author named none: a town's skyline where houses, buildings or cars
     stand, else trees with mountains behind (seeded by the shot, so the same each time)."""
@@ -369,9 +385,13 @@ def build_develop_plan(data: dict, shot: dict, instruction_path: str | Path | No
     frame = frame_of(shot["frame"])
     setting, setting_assumed = setting_of(shot)
     # Outdoors the finished picture has a distance: far layers the author did not ask for are made (and noted).
-    far_assumed = default_far(shot) if setting == "outdoor" and not shot.get("far") and not shot.get("place") else []
+    # A place (a .blend) ends somewhere: past it, when the eye level shows, the far layers too.
+    dpi = min(dpi or DEVELOP_DPI, frame.dpi)
+    far_assumed = default_far(shot) if setting == "outdoor" and not shot.get("far") else []
+    if far_assumed and shot.get("place") and not horizon_in_frame(build_plan(data, shot, instruction_path, dpi)):
+        far_assumed = []
     built_from = {**shot, "far": far_assumed} if far_assumed else shot
-    plan = build_plan(data, built_from, instruction_path, min(dpi or DEVELOP_DPI, frame.dpi))
+    plan = build_plan(data, built_from, instruction_path, dpi)
     plan["hashes"] = {**hashes(shot), "objects": object_hashes(shot)}
     camera = plan["camera"]
     light, light_assumed = lighting(shot.get("look"), camera["headingDeg"], setting)

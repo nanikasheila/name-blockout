@@ -131,6 +131,23 @@ def outline(p: Projector, objects):
     return [min(xs), min(ys), max(xs), max(ys)]
 
 
+def box_outline(p: Projector, gauge: dict):
+    """The outline of the box a shape was made in (its corners projected), as the Blockout's box would show."""
+    (cx, cy, cz), (w, d, h) = gauge["centreM"], gauge["sizeM"]
+    if gauge.get("along") == "Y":
+        w, d = d, w
+    xs, ys = [], []
+    for dx in (-w / 2, w / 2):
+        for dy in (-d / 2, d / 2):
+            for z in (cz, cz + h):
+                q = p.px(Vector((cx + dx, cy + dy, z)))
+                if q is None:
+                    return None
+                xs.append(q[0])
+                ys.append(q[1])
+    return [min(xs), min(ys), max(xs), max(ys)]
+
+
 def measure(plan: dict, built: dict) -> dict:
     width, height = plan["targets"]["sizePx"]
     p = Projector(width, height)
@@ -145,9 +162,11 @@ def measure(plan: dict, built: dict) -> dict:
             e = edge_vanishing(p, built["edges"], axis)
             if e:
                 out["edgeVanishingPx"][str(i)] = e
+        gauges = built.get("gauges") or {}
         for key, kind in (("objects", "objectsPx"), ("figures", "figuresPx")):
             for ident, objs in built[key].items():
-                box = outline(p, objs)
+                gauge = gauges.get(ident) if key == "objects" else None
+                box = box_outline(p, gauge) if gauge else outline(p, objs)
                 if box:
                     out[kind][ident] = box
         cam = p.cam.data

@@ -49,6 +49,17 @@ def last_built(folder: Path, shot_id: str, mode: str = "blockout") -> dict | Non
     return None
 
 
+def _made_by_other(work: Path, mode: str) -> bool:
+    """Whether a take's folder holds what the other phase (Blockout / development) made."""
+    path = work / "built.json"
+    if not path.exists():
+        return False
+    try:
+        return json.loads(path.read_text(encoding="utf-8")).get("mode", "blockout") != mode
+    except (OSError, json.JSONDecodeError):
+        return False
+
+
 TIME_WORDS = {"dawn": "明け方", "morning": "朝", "noon": "昼", "afternoon": "午後", "evening": "夕方", "dusk": "日暮れ", "night": "夜"}
 WEATHER_WORDS = {"clear": "晴れ", "cloudy": "くもり", "overcast": "どんより", "rain": "雨", "snow": "雪", "fog": "霧", "haze": "かすみ"}
 #: The plan notes the take's one-line note carries: the room, the window the light comes from, the 素材 swapped in.
@@ -127,6 +138,9 @@ def run_blockout(
         started = time.time()
         plan = (build_develop_plan if develop else build_plan)(data, shot, instruction_path, preview_dpi)
         number = take or (shot.get("output") or {}).get("take") or next_take(folder, shot["id"])
+        if not take and _made_by_other(folder / WORK_DIR / shot["id"] / number, mode):
+            # The instruction's take holds the other phase's pictures: keep them, and draw this one as a new take.
+            number = next_take(folder, shot["id"])
         work = folder / WORK_DIR / shot["id"] / number
         takes_dir = folder / TAKES_DIR / shot["id"] / number
         built = bscene.build(plan)

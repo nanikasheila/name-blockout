@@ -219,6 +219,25 @@
               "items": { "$ref": "#/$defs/axis" },
               "maxItems": 2
             },
+            "moves": {
+              "description": "場所の中の物を動かす（.blend の中の物の名前で）。位置は場所の座標の m、向きは Z まわりの度。",
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": ["object"],
+                "properties": {
+                  "object": { "type": "string" },
+                  "positionM": { "$ref": "#/$defs/vec3" },
+                  "turnDeg": { "type": "number" }
+                },
+                "additionalProperties": false
+              }
+            },
+            "hide": {
+              "description": "場所の中で描かない物の名前（頭が同じものも）。",
+              "type": "array",
+              "items": { "type": "string" }
+            },
             "note": { "type": "string" }
           },
           "additionalProperties": false

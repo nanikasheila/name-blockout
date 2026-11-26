@@ -23,6 +23,8 @@ from ..far import BANDS, LINE_SCALE
 from .scene import PREFIX, holdout_material
 
 LINE_PX_AT_150DPI = 1.6
+#: The shortest stroke drawn, in line widths.
+MIN_STROKE_WIDTHS = 3.0
 
 
 def _freestyle(scene, thickness: float):
@@ -38,22 +40,43 @@ def _freestyle(scene, thickness: float):
         coll = bpy.data.collections.get(PREFIX + ("ground" if group == "ground" else "band_" + group))
         if coll is None or not coll.all_objects:
             continue
-        ls = fs.linesets.new(f"NB_lines_{group}")
-        ls.select_by_visibility = True
-        ls.visibility = "VISIBLE"
-        ls.select_by_collection = True
-        ls.collection = coll
-        ls.select_by_edge_types = True
-        ls.select_silhouette = True
-        ls.select_border = False
-        ls.select_crease = True
-        ls.select_edge_mark = True
-        ls.select_external_contour = True
         style = bpy.data.linestyles.new(f"NB_style_{group}")
-        ls.linestyle = style
         style.color = (0, 0, 0)
         style.thickness = max(0.75, thickness * LINE_SCALE[group])
         style.thickness_position = "CENTER"
+        # Strokes shorter than a few line widths are specks (a crease on a small facet), not lines a pen would draw.
+        style.use_length_min = True
+        style.length_min = max(3.0, thickness * MIN_STROKE_WIDTHS)
+        foliage = any(o.get("nb_foliage") for o in coll.all_objects)
+        # The main set: every edge type, but not on crowns and bushes (their faces are marked: render their outline).
+        ls = _lineset(fs, f"NB_lines_{group}", coll, style)
+        ls.select_crease = True
+        ls.select_edge_mark = True
+        if foliage:
+            ls.select_by_face_marks = True
+            ls.face_mark_negation = "EXCLUSIVE"
+            ls.face_mark_condition = "ONE"
+            # Crowns: their outline against what is behind them, nothing inside.
+            leaves = _lineset(fs, f"NB_lines_{group}_foliage", coll, style)
+            leaves.select_crease = False
+            leaves.select_edge_mark = False
+            leaves.select_by_face_marks = True
+            leaves.face_mark_negation = "INCLUSIVE"
+            leaves.face_mark_condition = "ONE"
+
+
+def _lineset(fs, name: str, coll, style):
+    ls = fs.linesets.new(name)
+    ls.select_by_visibility = True
+    ls.visibility = "VISIBLE"
+    ls.select_by_collection = True
+    ls.collection = coll
+    ls.select_by_edge_types = True
+    ls.select_silhouette = True
+    ls.select_border = False
+    ls.select_external_contour = True
+    ls.linestyle = style
+    return ls
 
 
 def _show_only_far(only_far: bool) -> None:
@@ -61,7 +84,7 @@ def _show_only_far(only_far: bool) -> None:
         if coll.name.startswith(PREFIX) and coll.name not in (PREFIX + "band_far", PREFIX + "camera"):
             coll.hide_render = only_far
     for ls in bpy.context.view_layer.freestyle_settings.linesets:
-        ls.show_render = not only_far or ls.name == "NB_lines_far"
+        ls.show_render = not only_far or ls.name.startswith("NB_lines_far")
 
 
 def render_passes(plan: dict, out_dir: Path, passes=("完成", "線画", "トーン"), samples: int = 6) -> dict:

@@ -106,7 +106,23 @@ def shape_of(obj: dict, size) -> tuple[list[Part], str | None]:
     if not kind:
         return [], None
     seed = sum(ord(ch) for ch in str(obj.get("id") or obj.get("label") or kind))
-    return BUILDERS[kind](w, d, h, random.Random(seed)), kind
+    return fit(BUILDERS[kind](w, d, h, random.Random(seed)), w, d, h), kind
+
+
+def fit(parts: list[Part], w: float, d: float, h: float) -> list[Part]:
+    """The parts stretched and moved so together they fill the box exactly (bottom centre at the origin): the
+    author's range is the thing's outline, eaves and crowns included."""
+    if not parts:
+        return parts
+    lo, hi = bounds(parts)
+    want_lo, want = (-w / 2, -d / 2, 0.0), (w, d, h)
+    k = [want[i] / (hi[i] - lo[i]) if hi[i] - lo[i] > 1e-9 else 1.0 for i in range(3)]
+    out = []
+    for p in parts:
+        c = [round(want_lo[i] + (p["c"][i] - lo[i]) * k[i], 4) for i in range(3)]
+        sz = [round(p["s"][i] * k[i], 4) for i in range(3)]
+        out.append({**p, "c": c, "s": sz})
+    return out
 
 
 def _own(shape: dict, w: float, d: float, h: float) -> list[Part]:
@@ -206,6 +222,32 @@ def house(w, d, h, rnd) -> list[Part]:
             "ridge": ridge,
         },
     ]
+    # Siding: boards across the walls, a line every 0.3 m (windows and the door stand in front of them).
+    boards = int((wall_top - footing) / 0.3)
+    for i in range(1, boards):
+        z = footing + i * (wall_top - footing) / boards
+        parts.append(_box("板張り", (0, -d / 2 - 0.006, z), (w, 0.012, 0.018)))
+        parts.append(_box("板張り", (-w / 2 - 0.006, 0, z), (0.012, d, 0.018)))
+        parts.append(_box("板張り", (w / 2 + 0.006, 0, z), (0.012, d, 0.018)))
+    # Corner boards, a ridge cap and the barge boards of the gables.
+    for x in (-w / 2, w / 2):
+        parts.append(_box("隅板", (x, -d / 2, (footing + wall_top) / 2), (0.12, 0.12, wall_top - footing), "木"))
+    roof_h = h - wall_top - 0.12
+    span = (w if ridge == "Y" else d) + 2 * eave
+    run = (d if ridge == "Y" else w) + 2 * eave
+    cap = (0, 0, h + 0.04)
+    parts.append(_box("棟", cap, (0.2, run, 0.12) if ridge == "Y" else (run, 0.2, 0.12), "瓦"))
+    # Tile courses: lines across each slope, from the eave up to the ridge.
+    rows = max(3, int(math.hypot(span / 2, roof_h) / 0.3))
+    for i in range(1, rows):
+        t = i / rows
+        z = wall_top + 0.12 + roof_h * t
+        off = span / 2 * (1 - t)
+        for side in (-1, 1):
+            if ridge == "Y":
+                parts.append(_box("瓦の段", (side * off, 0, z + 0.01), (0.03, run, 0.03), "瓦"))
+            else:
+                parts.append(_box("瓦の段", (0, side * off, z + 0.01), (run, 0.03, 0.03), "瓦"))
     floors = max(1, min(3, round((wall_top - footing) / 2.6)))
     storey = (wall_top - footing) / floors
     for f in range(floors):
@@ -573,26 +615,50 @@ def pole(w, d, h, rnd) -> list[Part]:
 
 
 def tree(w, d, h, rnd) -> list[Part]:
+    """A broadleaf tree: a tapering trunk with a few boughs, and a crown of many lumpy clusters of leaves
+    (faceted, so the pen draws their outlines like a hand-drawn crown)."""
     trunk = h * 0.42
-    r = max(0.1, min(w, d) * 0.07)
-    parts = [_cyl("幹", (0, 0, trunk / 2), (2 * r, 2 * r, trunk), "Z", "木")]
-    crown = h - trunk * 0.8
-    for i in range(5):
-        a = i * 2 * math.pi / 5 + rnd.uniform(-0.3, 0.3)
-        k = 0.0 if i == 0 else 0.25
-        cw = min(w, d) * rnd.uniform(0.55, 0.75)
+    r = max(0.1, min(w, d) * 0.06)
+    parts = [
+        _cyl("幹", (0, 0, trunk * 0.55 / 2), (2 * r, 2 * r, trunk * 0.55), "Z", "木"),
+        _cyl("幹", (0, 0, trunk * 0.55 + trunk * 0.45 / 2), (1.5 * r, 1.5 * r, trunk * 0.45), "Z", "木"),
+    ]
+    for i in range(3):
+        a = i * 2.1 + rnd.uniform(-0.4, 0.4)
+        reach = min(w, d) * 0.22
         parts.append(
             {
-                **_box(
-                    "葉",
-                    (math.cos(a) * w * k, math.sin(a) * d * k, trunk * 0.8 + crown * rnd.uniform(0.45, 0.6)),
-                    (cw, cw, crown * rnd.uniform(0.6, 0.85)),
-                    "草",
+                **_cyl(
+                    "枝",
+                    (math.cos(a) * reach / 2, math.sin(a) * reach / 2, trunk * rnd.uniform(0.85, 1.05)),
+                    (r, r, reach * 1.2),
+                    "Z",
+                    "木",
                 ),
-                "shape": "sphere",
+                "tilt": [math.cos(a), math.sin(a)],
             }
         )
+    crown = h - trunk * 0.75
+    middle = trunk * 0.75 + crown * 0.5
+    rx, ry, rz = w / 2, d / 2, crown / 2
+    # A core that closes the crown (no sky through its middle), then clusters over its shell, overlapping, the
+    # lower ones a little smaller (a crown is fuller on top and in the light).
+    parts.append(_leaves((0, 0, middle), (rx * 1.3, ry * 1.3, rz * 1.3), rnd))
+    clusters = 20 + rnd.randrange(8)
+    for i in range(clusters):
+        a = (i * 2.39996 + rnd.uniform(-0.3, 0.3)) % (2 * math.pi)  # golden angle: spread evenly round
+        up = rnd.uniform(-0.6, 0.95)
+        out = math.sqrt(max(0.0, 1 - up * up)) * rnd.uniform(0.55, 0.8)
+        k = rnd.uniform(0.38, 0.55) * (0.85 if up < 0 else 1.0)
+        parts.append(
+            _leaves((math.cos(a) * out * rx, math.sin(a) * out * ry, middle + up * rz * 0.7), (rx * k * 2, ry * k * 2, rz * k * 1.6), rnd)
+        )
     return parts
+
+
+def _leaves(c, s, rnd) -> Part:
+    """A cluster of leaves: a lumpy ball (its corners pushed in or out, seeded)."""
+    return {**_box("葉", c, s, "草"), "shape": "sphere", "lumpy": round(rnd.uniform(0.08, 0.16), 3), "seed": rnd.randrange(1 << 16)}
 
 
 def door(w, d, h, rnd) -> list[Part]:

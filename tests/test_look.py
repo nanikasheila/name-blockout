@@ -80,7 +80,7 @@ def test_materials_assigned_and_guessed():
     }
     mats, assumed = assign(shot)
     assert mats["a"]["name"] == "コンクリート" and mats["b"]["beta"] and mats["c"]["name"] == "白壁"
-    assert mats["ground"]["name"] == "アスファルト"
+    assert mats["ground"]["name"] == "白地"
     assert {a["path"] for a in assumed} == {"look.materials/b", "look.materials/c", "look.materials/ground"}
     assert guess("給水塔の上") == "コンクリート" and guess("???") is None
     assert all(0 <= m.tone <= m.shadowTone <= 1 for m in LIBRARY.values())
@@ -115,4 +115,4 @@ def test_indoors_the_light_is_the_room_s():
     # Said outdoors, it stays outdoors.
     assert setting_of({"objects": [{"id": "o1", "label": "ソファ"}], "look": {"setting": "outdoor"}}) == ("outdoor", None)
     floor, _ = assign(shot, "indoor")
-    assert floor["ground"]["name"] == "木" and floor["o1"]["name"] == "布"
+    assert floor["ground"]["name"] == "白地" and floor["o1"]["name"] == "布"
