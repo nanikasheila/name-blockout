@@ -687,10 +687,6 @@ def add_place(place: dict):
         # shadows toned: a whole ground in grey weighs the picture down.
         if _flat_and_large(o, lowest):
             guessed = [g if g in KEEP_ON_FLAT else FLAT for g in guessed]
-            # Its joints drawn as a ground's lines (thin, grey: render.py), in a collection of their own.
-            for c in list(o.users_collection):
-                c.objects.unlink(o)
-            collection("flat").objects.link(o)
             o["nb_ground"] = True
         o["nb_place_materials"] = guessed
         if any(g == "黒い塗装" for g in guessed):
@@ -722,8 +718,7 @@ def build(plan: dict) -> dict:
         measured["edges"].append(add_ground(plan["ground"]))
     if plan.get("place"):
         coll = add_place(plan["place"])
-        flat = bpy.data.collections.get(PREFIX + "flat")
-        measured["place"] = [o for o in coll.all_objects if o.type == "MESH"] + (list(flat.objects) if flat else [])
+        measured["place"] = [o for o in coll.all_objects if o.type == "MESH"]
         measured["edges"] += measured["place"]
     if plan.get("room"):
         room = add_room(plan["room"])

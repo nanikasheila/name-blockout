@@ -36,7 +36,7 @@ import numpy as np
 from mathutils import Vector
 
 from ..materials import DEFAULT, LIBRARY
-from .render import render_passes
+from .render import LINE_PX_AT_150DPI, render_passes
 from .scene import PREFIX, collection
 
 #: Under this share of the light a white face gets facing the sun, a pixel is in shadow.
@@ -58,6 +58,11 @@ FACE_LIT = 0.3
 FACE_AWAY = -0.02
 #: A light higher than this (degrees) is overhead: the ground beside a thing is not checked, its shadow is at its foot.
 OVERHEAD_DEG = 70.0
+#: A surface counts as looking up (a floor, the ground) when its normal's z is above this.
+UP_NORMAL = 0.9
+#: The joints on such a surface: their grey and how much of their line is kept.
+JOINT_GREY = 0.35
+JOINT_ALPHA = 0.7
 #: How far under a place's lowest surface the light's ground lies (m).
 LIGHT_GROUND_BELOW = 0.05
 #: Under the ceiling's light, a place's faces this high above the floor under the camera (m) are the ceiling (and
@@ -287,6 +292,9 @@ def develop_passes(plan: dict, built: dict, out_dir: Path, samples: int = 16) ->
     if sun is not None:
         # The picture is stored for the screen (sRGB): compare with the share as stored.
         shadow = (lit[..., 0] < _srgb(SHADOW_SHARE)) & (alpha > 0.5)
+        # A wall lit at a grazing angle sits near the share all over, and its noise would speckle it: each pixel
+        # goes with the most of those round it.
+        shadow = majority(shadow, 2) & (alpha > 0.5)
     elif word in NO_SUN_ALL_SHADOW:
         shadow = alpha > 0.5
     else:
@@ -298,6 +306,12 @@ def develop_passes(plan: dict, built: dict, out_dir: Path, samples: int = 16) ->
     lit_tones = _render(out_dir / "_lit.png", 4)
     _set_materials(built, plan, "shadowTone", ground)
     shadow_tones = _render(out_dir / "_shadow.png", 4)
+    # Which way each pixel's surface looks: the joints of a floor or a lot (lines with surface looking up on both
+    # sides) are drawn thin and grey; a step's edge, a wall's foot and every outline stay black.
+    layer.material_override = _facing_up()
+    facing = _render(out_dir / "_up.png", 1)
+    layer.material_override = None
+    up = (facing[..., 3] > 0.5) & (facing[..., 0] > _srgb(UP_NORMAL))
 
     # 3. Put together; at dawn, dusk and night the sky is toned too.
     tone = np.where(shadow[..., None], shadow_tones, lit_tones)
@@ -314,9 +328,13 @@ def develop_passes(plan: dict, built: dict, out_dir: Path, samples: int = 16) ->
     files["影"] = _save(out_dir / "影.png", shade)
     white = np.ones((h, w, 4), dtype=np.float32)
     lines = _load(files["線画"]) if "線画" in files else np.zeros((h, w, 4), dtype=np.float32)
-    files["完成"] = _save(out_dir / "完成.png", _over(white_on_beta(lines, tone), _over(tone, white)))
+    reach = max(2, round(LINE_PX_AT_150DPI * plan["render"]["dpi"] / 150 * 1.2))
+    if "線画" in files:
+        lines = grey_joints(lines, up, reach)
+        _save(files["線画"], lines)
+    files["完成"] = _save(out_dir / "完成.png", _over(white_on_beta(lines, tone, reach), _over(tone, white)))
     check = shadow_check(plan, built, shadow, lit, sun)
-    for name in ("_lit.png", "_shadow.png"):
+    for name in ("_lit.png", "_shadow.png", "_up.png"):
         (out_dir / name).unlink(missing_ok=True)
     if grid is not None:
         grid.hide_render = False
@@ -371,9 +389,71 @@ def split_above(obj, z: float):
     return piece
 
 
-def white_on_beta(lines: np.ndarray, tone: np.ndarray) -> np.ndarray:
-    """The lines with those over ベタ (a solid black) turned white, as a manga draws them."""
+def _facing_up():
+    """A material showing how much each surface looks up (its normal's z, 0 for sideways or down), flat."""
+    mat = bpy.data.materials.get(PREFIX + "facing_up") or bpy.data.materials.new(PREFIX + "facing_up")
+    mat.use_nodes = True
+    nodes, links = mat.node_tree.nodes, mat.node_tree.links
+    nodes.clear()
+    out = nodes.new("ShaderNodeOutputMaterial")
+    geo = nodes.new("ShaderNodeNewGeometry")
+    split = nodes.new("ShaderNodeSeparateXYZ")
+    emit = nodes.new("ShaderNodeEmission")
+    links.new(geo.outputs["True Normal"], split.inputs[0])
+    links.new(split.outputs["Z"], emit.inputs["Strength"])
+    emit.inputs["Color"].default_value = (1.0, 1.0, 1.0, 1.0)
+    links.new(emit.outputs[0], out.inputs[0])
+    return mat
+
+
+def majority(mask: np.ndarray, r: int) -> np.ndarray:
+    """Each pixel set as most of the (2r+1)² square round it is (speckles go, edges stay)."""
+    padded = np.pad(mask.astype(np.int32), r + 1, mode="edge")
+    total = padded.cumsum(0).cumsum(1)
+    n = 2 * r + 1
+    h, w = mask.shape
+    s = total[n : n + h, n : n + w] - total[0:h, n : n + w] - total[n : n + h, 0:w] + total[0:h, 0:w]
+    return s * 2 > n * n
+
+
+def erode(mask: np.ndarray, r: int) -> np.ndarray:
+    """Where `mask` holds within r pixels all round (a square, in two passes)."""
+    out = mask.copy()
+    for axis in (0, 1):
+        src = out.copy()
+        for d in range(1, r + 1):
+            out[(slice(d, None),) if axis == 0 else (slice(None), slice(d, None))] &= src[
+                (slice(None, -d),) if axis == 0 else (slice(None), slice(None, -d))
+            ]
+            out[(slice(None, -d),) if axis == 0 else (slice(None), slice(None, -d))] &= src[
+                (slice(d, None),) if axis == 0 else (slice(None), slice(d, None))
+            ]
+        edge = [slice(None)] * 2
+        edge[axis] = slice(0, r)
+        out[tuple(edge)] = False
+        edge[axis] = slice(-r, None)
+        out[tuple(edge)] = False
+    return out
+
+
+def grey_joints(lines: np.ndarray, up: np.ndarray, reach: int) -> np.ndarray:
+    """The lines lying inside a surface that looks up (a floor's boards, a lot's paving: up on every side within
+    `reach` pixels, the line's own pixels counted as up) drawn grey and lighter."""
+    drawn = lines[..., 3] > 0.05
+    inside = erode(up | drawn, reach) & drawn
+    out = lines.copy()
+    out[inside, :3] = JOINT_GREY
+    out[inside, 3] *= JOINT_ALPHA
+    return out
+
+
+def white_on_beta(lines: np.ndarray, tone: np.ndarray, reach: int = 0) -> np.ndarray:
+    """The lines with those over ベタ (a solid black) turned white, as a manga draws them; within `reach` pixels of
+    the ベタ's edge they stay black (its outline against what is round it)."""
     beta = (tone[..., 3] > 0.5) & (tone[..., :3].max(axis=-1) < BETA_SHOWN)
+    if reach:
+        drawn = lines[..., 3] > 0.05
+        beta = erode(beta | drawn, reach) & beta
     out = lines.copy()
     out[beta, :3] = 1.0 - out[beta, :3]
     return out
