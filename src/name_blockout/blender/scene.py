@@ -555,6 +555,7 @@ def _hidden(name: str, hide) -> bool:
 #: On a ベタ thing (a black van) the pen draws its folds sharper than this (degrees) in white: its windows' frames, its
 #: roof's edge, its doors' seams; a box's corners alone would leave a black lump.
 SHARP_ON_BETA_DEG = 35.0
+SHARP_MIN_M = 0.08
 
 
 def mark_sharp(obj) -> None:
@@ -563,7 +564,13 @@ def mark_sharp(obj) -> None:
     bm = bmesh.new()
     bm.from_mesh(mesh)
     limit = math.radians(SHARP_ON_BETA_DEG)
-    sharp = [e.is_boundary or (len(e.link_faces) == 2 and e.calc_face_angle(0.0) > limit) for e in bm.edges]
+    # Long folds only: a bolt's or a vent's tiny facets would make thousands of strokes for nothing (and slow
+    # Freestyle down several times).
+    scale = max(obj.matrix_world.to_scale())
+    sharp = [
+        e.calc_length() * scale >= SHARP_MIN_M and (e.is_boundary or (len(e.link_faces) == 2 and e.calc_face_angle(0.0) > limit))
+        for e in bm.edges
+    ]
     bm.free()
     attr = mesh.attributes.get("freestyle_edge") or mesh.attributes.new("freestyle_edge", "BOOLEAN", "EDGE")
     attr.data.foreach_set("value", sharp)
@@ -687,10 +694,6 @@ def add_place(place: dict):
         # shadows toned: a whole ground in grey weighs the picture down.
         if _flat_and_large(o, lowest):
             guessed = [g if g in KEEP_ON_FLAT else FLAT for g in guessed]
-            # Its joints drawn as a ground's lines (thin, grey: render.py), in a collection of their own.
-            for c in list(o.users_collection):
-                c.objects.unlink(o)
-            collection("flat").objects.link(o)
             o["nb_ground"] = True
         o["nb_place_materials"] = guessed
         if any(g == "黒い塗装" for g in guessed):
@@ -722,8 +725,7 @@ def build(plan: dict) -> dict:
         measured["edges"].append(add_ground(plan["ground"]))
     if plan.get("place"):
         coll = add_place(plan["place"])
-        flat = bpy.data.collections.get(PREFIX + "flat")
-        measured["place"] = [o for o in coll.all_objects if o.type == "MESH"] + (list(flat.objects) if flat else [])
+        measured["place"] = [o for o in coll.all_objects if o.type == "MESH"]
         measured["edges"] += measured["place"]
     if plan.get("room"):
         room = add_room(plan["room"])

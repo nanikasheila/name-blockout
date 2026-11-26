@@ -388,9 +388,8 @@ def test_develop_in_a_place(tmp_path):
     assert bpy.data.objects["Floor"]["nb_place_materials"] == ["白地"]
     assert bpy.data.objects["site_ground"]["nb_place_materials"] == ["白地"] and not bpy.data.objects["site_ground"].get("nb_foliage")
     assert bpy.data.objects["Shell"]["nb_place_materials"] == ["白壁"]
-    # A ground's lines are a ground's (thin, grey); a ベタ thing's folds are drawn (white over it).
-    assert bpy.data.objects["site_ground"].users_collection[0].name == "NB_flat"
-    assert "NB_lines_flat" in [ls.name for ls in bpy.context.view_layer.freestyle_settings.linesets]
+    # A ベタ thing's folds are drawn (white over it).
+    assert bpy.data.objects["site_ground"].get("nb_ground")
     assert all(v.value for v in van.data.attributes["freestyle_edge"].data)
     assert "NB_lines_near_foliage" in [ls.name for ls in bpy.context.view_layer.freestyle_settings.linesets]
 
@@ -408,3 +407,62 @@ def test_develop_in_a_place(tmp_path):
     light = json.loads((tmp_path / "blockout" / "panel1" / r["take"] / "check.json").read_text(encoding="utf-8"))
     faces = next(c for c in light["checks"] if c["name"] == "影の向き")["faces"]
     assert faces["sunny"][1] > 0 and faces["sunny"][0] / faces["sunny"][1] > 0.85, faces
+
+
+@needs_blender
+def test_joints_grey_and_outlines_black():
+    """A line inside a floor (up on both sides) turns grey; the floor's edge against a wall stays black; a line inside
+    ベタ turns white, the ベタ's outline stays black."""
+    import numpy as np
+
+    from name_blockout.blender.develop import grey_joints, white_on_beta
+
+    h, w = 40, 60
+    lines = np.zeros((h, w, 4), dtype=np.float32)
+    lines[:, 20, 3] = 1.0  # a joint across the floor
+    lines[30, :, 3] = 1.0  # the floor's edge: below it a wall
+    up = np.zeros((h, w), dtype=bool)
+    up[:30] = True
+    out = grey_joints(lines, up, 3)
+    assert out[10, 20, 0] > 0.2 and out[10, 20, 3] < 1.0
+    assert out[30, 40, 0] == 0.0 and out[30, 40, 3] == 1.0
+    tone = np.ones((h, w, 4), dtype=np.float32)
+    tone[5:25, 30:55, :3] = 0.0  # a ベタ block
+    lines = np.zeros((h, w, 4), dtype=np.float32)
+    lines[15, 30:55, 3] = 1.0  # a seam across it, reaching its edges
+    done = white_on_beta(lines, tone, 3)
+    assert done[15, 42, 0] == 1.0 and done[15, 30, 0] == 0.0
+
+
+@needs_blender
+def test_majority_removes_speckles_keeps_edges():
+    import numpy as np
+
+    from name_blockout.blender.develop import majority
+
+    mask = np.zeros((30, 30), dtype=bool)
+    mask[:, 15:] = True
+    mask[5, 5] = True  # a speck in the light
+    mask[20, 25] = False  # a speck in the shadow
+    out = majority(mask, 2)
+    assert not out[5, 5] and out[20, 25]
+    assert (out[:, 15:] == True).all() and not out[:, :15].any()  # noqa: E712
+
+
+@needs_blender
+def test_a_step_edge_is_not_a_joint():
+    """A line between two surfaces looking up at two heights (a step's edge) stays black; a joint in one floor greys."""
+    import numpy as np
+
+    from name_blockout.blender.develop import grey_joints
+
+    h, w = 40, 60
+    lines = np.zeros((h, w, 4), dtype=np.float32)
+    lines[20, :, 3] = 1.0  # the step's edge
+    lines[:, 40, 3] = 1.0  # a joint
+    up = np.ones((h, w), dtype=bool)
+    height = np.zeros((h, w), dtype=np.float32)
+    height[:20] = 0.2  # the step's top, 20 cm over the floor
+    out = grey_joints(lines, up, 3, height)
+    assert out[20, 10, 0] == 0.0 and out[20, 10, 3] == 1.0
+    assert out[5, 40, 0] > 0.2 and out[30, 40, 0] > 0.2

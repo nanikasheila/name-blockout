@@ -23,9 +23,11 @@ from ..far import BANDS, LINE_SCALE
 from .scene import PREFIX, holdout_material
 
 LINE_PX_AT_150DPI = 1.6
-#: The ground's grid and a place's grounds (scene.py "flat"): their lines thin and grey.
-GROUNDS = ("ground", "flat")
+#: The ground's grid: its lines thin and grey.
+GROUNDS = ("ground",)
 GROUND_LINE = (0.45, 0.45, 0.45)
+#: A crown's shortest stroke, in the shortest strokes of the rest.
+FOLIAGE_MIN_STROKE = 3.0
 #: The shortest stroke drawn, in line widths.
 MIN_STROKE_WIDTHS = 3.0
 
@@ -44,7 +46,7 @@ def _freestyle(scene, thickness: float):
         if coll is None or not coll.all_objects:
             continue
         style = bpy.data.linestyles.new(f"NB_style_{group}")
-        # A ground's joints are thin and grey (a floor's boards, a lot's paving), as a background artist draws them.
+        # The ground's grid is thin and grey, as a background artist draws a lot's paving (a place's joints: develop.py).
         style.color = GROUND_LINE if group in GROUNDS else (0, 0, 0)
         style.thickness = max(0.75, thickness * LINE_SCALE[group])
         style.thickness_position = "CENTER"
@@ -60,8 +62,12 @@ def _freestyle(scene, thickness: float):
             ls.select_by_face_marks = True
             ls.face_mark_negation = "EXCLUSIVE"
             ls.face_mark_condition = "ONE"
-            # Crowns: their outline against what is behind them, nothing inside.
-            leaves = _lineset(fs, f"NB_lines_{group}_foliage", coll, style)
+            # Crowns: their outline against what is behind them, nothing inside; their strokes chained long and the
+            # short bits between lumps left out.
+            crown = style.copy()
+            crown.name = f"NB_style_{group}_foliage"
+            crown.length_min = style.length_min * FOLIAGE_MIN_STROKE
+            leaves = _lineset(fs, f"NB_lines_{group}_foliage", coll, crown)
             leaves.select_crease = False
             leaves.select_edge_mark = False
             leaves.select_by_face_marks = True
