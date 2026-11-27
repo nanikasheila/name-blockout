@@ -17,6 +17,8 @@ import numpy as np
 from bpy_extras.object_utils import world_to_camera_view
 from mathutils import Vector
 
+from .. import outline as plan_outline
+
 FAR = 1.0e5
 AXIS = {"+X": (1, 0, 0), "-X": (-1, 0, 0), "+Y": (0, 1, 0), "-Y": (0, -1, 0), "+Z": (0, 0, 1), "-Z": (0, 0, -1)}
 MAX_EDGES = 400
@@ -198,10 +200,65 @@ def hull(points: list[tuple[float, float]]) -> list[tuple[float, float]]:
     return lower[:-1] + upper[:-1]
 
 
-def footprints(objects) -> list[dict]:
-    """What a place holds, seen from straight above (for the top view): each mesh's outline on the ground (the
-    convex hull of its vertices as the scene shows them, modifiers applied), how high it reaches, and whether it is
-    a ground (a lot, a lawn, a terrace). The largest first."""
+#: A floor plan is cut this high above the floor (m), as an architect's is.
+CUT_ABOVE_FLOOR = 1.2
+#: The camera is indoors when something is over it, under it and around it within these distances (m).
+CEILING_WITHIN = 12.0
+WALLS_WITHIN = 40.0
+WALLS_NEEDED = 3
+ROOM_RAYS = 24
+#: Where the floor is looked for around the camera: (how far, how many spots), and floors this close are one (m).
+FLOOR_SPOTS = ((0.5, 4), (1.2, 8))
+FLOOR_STEP = 0.05
+
+
+def indoor_cut(position) -> dict | None:
+    """Where to cut a floor plan for a camera that stands indoors: None when it stands in the open. Indoors is
+    a floor below, something overhead and walls on at least three of four sides (a tree's crown or a carport over
+    the camera is not a room)."""
+    scene = bpy.context.scene
+    depsgraph = bpy.context.evaluated_depsgraph_get()
+    at = Vector(position)
+
+    def hit(direction, within, start=at):
+        found, where, *_ = scene.ray_cast(depsgraph, start, Vector(direction), distance=within)
+        return where if found else None
+
+    ceiling = hit((0, 0, 1), CEILING_WITHIN)
+    # The floor is what is under most of the spots around the camera: under the camera itself may be a table.
+    spots = [at] + [
+        at + Vector((math.cos(a) * r, math.sin(a) * r, 0.0)) for r, n in FLOOR_SPOTS for a in (math.tau * i / n for i in range(n))
+    ]
+    under = [h.z for h in (hit((0, 0, -1), 50.0, spot) for spot in spots) if h is not None]
+    if not under or ceiling is None:
+        return None
+    levels: dict[float, int] = {}
+    for z in under:
+        levels[round(z / FLOOR_STEP) * FLOOR_STEP] = levels.get(round(z / FLOOR_STEP) * FLOOR_STEP, 0) + 1
+    level = max(levels, key=lambda z: (levels[z], -z))
+    floor = Vector((at.x, at.y, min((z for z in under if abs(z - level) <= FLOOR_STEP), key=lambda z: abs(z - level))))
+    walls = sum(1 for d in ((1, 0, 0), (-1, 0, 0), (0, 1, 0), (0, -1, 0)) if hit(d, WALLS_WITHIN) is not None)
+    if walls < WALLS_NEEDED:
+        return None
+    # How far the room reaches from the camera: the furthest wall around it (the plan is drawn that far).
+    around = [hit((math.cos(a), math.sin(a), 0.0), WALLS_WITHIN) for a in (math.radians(360 * i / ROOM_RAYS) for i in range(ROOM_RAYS))]
+    reach = max(((w - at).length for w in around if w is not None), default=None)
+    return {
+        "floorM": round(float(floor.z), 3),
+        "ceilingM": round(float(ceiling.z), 3),
+        "cutM": round(float(floor.z) + CUT_ABOVE_FLOOR, 3),
+        "roomReachM": round(float(reach), 2) if reach else None,
+    }
+
+
+def footprints(objects, cut: float | None = None) -> list[dict]:
+    """What a place holds, seen from straight above (for the top view): each mesh as the scene shows it
+    (modifiers applied): its outline (rings: an L-shaped house stays an L, every tree is its own ring), the convex
+    outline around it, how high it reaches, and whether it is a ground (a lot, a lawn, a terrace).
+
+    With `cut` (a height, m) the place is drawn as a floor plan: what is wholly above the cut is left out (roofs,
+    ceilings, lamps), each mesh's outline is of its part that starts below the cut, and `sectionM` is the mesh cut
+    at that height (the walls). The largest first."""
     depsgraph = bpy.context.evaluated_depsgraph_get()
     out = []
     for obj in objects:
@@ -215,25 +272,38 @@ def footprints(objects) -> list[dict]:
             continue
         co = np.empty(n * 3, dtype=np.float32)
         mesh.vertices.foreach_get("co", co)
+        mesh.calc_loop_triangles()
+        tris = np.empty(len(mesh.loop_triangles) * 3, dtype=np.int32)
+        mesh.loop_triangles.foreach_get("vertices", tris)
+        tris = tris.reshape(-1, 3)
         shown.to_mesh_clear()
         m = np.array(obj.matrix_world, dtype=np.float64)
         world = co.reshape(n, 3).astype(np.float64) @ m[:3, :3].T + m[:3, 3]
-        cells = np.unique(np.round(world[:, :2] / FOOTPRINT_GRID).astype(np.int64), axis=0)
-        outline = hull([(float(x) * FOOTPRINT_GRID, float(y) * FOOTPRINT_GRID) for x, y in cells])
-        if len(outline) < 3:
+        ground = bool(obj.get("nb_ground"))
+        entry = {"name": obj.name, "heightM": [round(float(world[:, 2].min()), 2), round(float(world[:, 2].max()), 2)], "ground": ground}
+        if cut is not None and not ground:
+            if float(world[:, 2].min()) >= cut:
+                continue
+            tris = tris[world[tris][:, :, 2].min(axis=1) < cut]
+            entry["sectionM"] = plan_outline.section(world, tris, cut)
+            used = np.unique(tris)
+        else:
+            used = np.arange(n)
+        if len(used) < 3:
             continue
-        area = abs(sum(a[0] * b[1] - b[0] * a[1] for a, b in zip(outline, outline[1:] + outline[:1]))) / 2
+        cells = np.unique(np.round(world[used, :2] / FOOTPRINT_GRID).astype(np.int64), axis=0)
+        around = hull([(float(x) * FOOTPRINT_GRID, float(y) * FOOTPRINT_GRID) for x, y in cells])
+        if len(around) < 3:
+            continue
+        area = abs(sum(a[0] * b[1] - b[0] * a[1] for a, b in zip(around, around[1:] + around[:1]))) / 2
         if area < FOOTPRINT_MIN_AREA:
             continue
-        out.append(
-            {
-                "name": obj.name,
-                "footprintM": [[round(x, 2), round(y, 2)] for x, y in outline],
-                "heightM": [round(float(world[:, 2].min()), 2), round(float(world[:, 2].max()), 2)],
-                "areaM2": round(area, 2),
-                "ground": bool(obj.get("nb_ground")),
-            }
-        )
+        entry["footprintM"] = [[round(x, 2), round(y, 2)] for x, y in around]
+        entry["areaM2"] = round(area, 2)
+        if not ground:
+            # A ground is drawn by its edge alone: its rings would be the whole lot.
+            entry["ringsM"] = plan_outline.silhouette(world[:, :2], tris, FOOTPRINT_MIN_AREA)
+        out.append(entry)
     out.sort(key=lambda o: -o["areaM2"])
     return out
 

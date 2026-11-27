@@ -169,6 +169,39 @@ def cmd_plan(a) -> int:
     return 0
 
 
+def cmd_parts(a) -> int:
+    from .parts import write_parts
+    from .plan import build_develop_plan
+    from .requirement import current, effective, read_requirement
+
+    data = read_instruction(a.instruction)
+    folder = _folder(a, data)
+    out = []
+    for raw in data["shots"]:
+        if a.shot and raw["id"] not in a.shot:
+            continue
+        if (raw.get("intent") or {}).get("none"):
+            continue
+        version = current(read_requirement(folder, raw["id"]))
+        shot, _ = effective(raw, (version or {}).get("answers", {}))
+        # The parts are the development's (a Blockout is boxes), whatever stage the shot is at.
+        plan = build_develop_plan(data, shot, Path(a.instruction).resolve(), None)
+        written = write_parts(folder, plan)
+        out.append({"shot": plan["shot"], "label": plan["label"], "things": written})
+        if not a.json:
+            print(f"{plan['label']}: " + (f"{len(written)} 個の物" if written else "形を作る物はありません"))
+            for w in written:
+                size = "×".join(f"{v * 100:.0f}" for v in w["sizeM"])
+                print(
+                    f"  {w['label']}: 部品 {w['parts']} 個・{size} cm・{'浮いている部品なし' if w['pass'] else '浮いている部品あり'}  {w['svg']}"
+                )
+                for line in w["floating"]:
+                    print(f"    ！ {line}")
+    if a.json:
+        _print(out, True)
+    return 0 if all(w["pass"] for o in out for w in o["things"]) else 1
+
+
 def cmd_top(a) -> int:
     from .checks import check_shot, is_buildable
     from .plan import build_develop_plan
@@ -197,14 +230,16 @@ def cmd_top(a) -> int:
             return _in_blender(a) or 0
     out = []
     for plan in jobs:
-        outlines = None
+        outlines = cut = None
         if plan.get("place") and _has_bpy() and not a.no_place:
             from .blender import measure as bmeasure
             from .blender import scene as bscene
 
             bscene.reset()
-            outlines = bmeasure.footprints([o for o in bscene.add_place(plan["place"]).all_objects if o.type == "MESH"])
-        written = write_top(folder, plan, outlines)
+            meshes = [o for o in bscene.add_place(plan["place"]).all_objects if o.type == "MESH"]
+            cut = bmeasure.indoor_cut(plan["camera"]["positionM"])
+            outlines = bmeasure.footprints(meshes, cut["cutM"] if cut else None)
+        written = write_top(folder, plan, outlines, cut=cut)
         out.append({"shot": plan["shot"], "label": plan["label"], "svg": written["svg"], "json": written["json"], "top": written["top"]})
         if not a.json:
             print(f"{plan['label']}: {written['svg']}")
@@ -376,6 +411,9 @@ def parser() -> argparse.ArgumentParser:
     c.add_argument("--force", action="store_true", help="点検のエラーがあっても描く")
     c.add_argument("--no-place", action="store_true", help="場所（.blend）の中身を読まない（Blender を使わない）")
     c.add_argument("--blender", help="Blender の場所")
+    c = command("parts", cmd_parts, "部品: 作る形の寸法表・三面図と、浮いている部品がないかの点検")
+    c.add_argument("--shot", action="append", help="このコマだけ（何度でも）")
+    c.add_argument("--folder", help="作業フォルダー（既定: 指示書から）")
     for name, func, help_ in (
         ("answer", cmd_answer, "質問に答える"),
         ("confirm", cmd_confirm, "要求を確定する"),

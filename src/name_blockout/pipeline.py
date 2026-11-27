@@ -149,7 +149,9 @@ def run_blockout(
         result = verify(plan, measured)
         write_json(work / "plan.json", plan)
         # The same layout from straight above (俯瞰図/<コマ>.svg, and beside the take's files), a place's contents in it.
-        write_top(folder, plan, bmeasure.footprints(built["place"]) if built.get("place") else None, also=work)
+        cut = bmeasure.indoor_cut(plan["camera"]["positionM"]) if built.get("place") else None
+        outlines = bmeasure.footprints(built["place"], cut["cutM"] if cut else None) if built.get("place") else None
+        write_top(folder, plan, outlines, also=work, cut=cut)
         write_json(work / "measured.json", measured)
         write_json(work / "check.json", result)
         files = {}

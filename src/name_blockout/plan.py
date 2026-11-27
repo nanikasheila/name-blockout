@@ -18,6 +18,7 @@ from .imagesize import image_size
 from .instruction import Frame, frame_of
 from .look import DEFAULT_NORTH, aimed, lighting, setting_of
 from .materials import assign
+from .parts import assembly, floating_words
 from .room import WALL_LABELS, build_room, room_of, room_words, window_heading
 from .scope import hashes, object_hashes
 from .shapes import KIND_LABELS as SHAPE_LABELS
@@ -440,6 +441,11 @@ def build_develop_plan(data: dict, shot: dict, instruction_path: str | Path | No
             plain.append(o["label"])
     if made:
         plan["notes"].append("形を作った: " + "・".join(made))
+    # A part that neither stands on the ground nor touches one that does is a mistake in the numbers: say so
+    # before it is drawn floating.
+    for o in plan["objects"]:
+        if o.get("parts"):
+            plan["notes"] += floating_words(o["label"], assembly(o["parts"]))
     if plain:
         plan["notes"].append(
             "形のひな形がない物: " + "・".join(plain) + "（箱のまま。objects[].shape に部品を書くか、素材を足してください）"

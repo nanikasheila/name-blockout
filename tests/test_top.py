@@ -144,3 +144,61 @@ def test_a_size_far_from_usual_is_doubted():
     assert "20.0 倍" in top["things"][0]["doubt"]
     assert not top["things"][1].get("doubt")
     assert "！" in "\n".join(top_words(top)) and "#b3261e" in to_svg(top)
+
+
+def test_a_place_is_drawn_by_its_true_shapes_and_indoors_as_a_floor_plan():
+    plan = copy.deepcopy(_plan(develop=True))
+    plan["place"] = {"name": "家", "file": "x.blend"}
+    cam = plan["camera"]["positionM"]
+    level = build_top(plan)["camera"]["levelDir"]
+
+    def ahead(d, side=0.0):
+        return [cam[0] + level[0] * d - level[1] * side, cam[1] + level[1] * d + level[0] * side]
+
+    square = [ahead(4, -1), ahead(4, 1), ahead(6, 1), ahead(6, -1)]
+    trees = [[ahead(30, s - 1), ahead(30, s + 1), ahead(32, s + 1), ahead(32, s - 1)] for s in (-6, 6)]
+    outlines = [
+        {"name": "plants", "footprintM": trees[0] + trees[1], "ringsM": trees, "heightM": [0, 5], "ground": False},
+        {
+            "name": "shell",
+            "footprintM": square,
+            "ringsM": [square],
+            "sectionM": [[ahead(6, -1), ahead(6, 1)]],
+            "heightM": [0, 3],
+            "ground": False,
+        },
+    ]
+    # Seen whole: every tree its own shape, in one path.
+    top = build_top(plan, outlines)
+    svg = to_svg(top)
+    assert svg.count('fill-rule="evenodd"') == 2 and svg.count(" Z M ") == 1
+    assert top["reachM"] > 30 and "plants" in svg and "shell" in svg
+    assert "間取り" not in "\n".join(top_words(top))
+    # Cut as a floor plan: the walls in a heavy line, the drawing no further than the room.
+    cut = {"floorM": 0.3, "ceilingM": 2.9, "cutM": 1.5, "roomReachM": 7.0}
+    top = build_top(plan, outlines, cut)
+    assert top["place"]["cut"] == cut and top["reachM"] < 10
+    svg = to_svg(top)
+    assert 'stroke="#222" stroke-width="2.2"' in svg
+    assert "床から 1.2 m の高さで切った間取り" in "\n".join(top_words(top))
+    # North and the world's axes are on the drawing, the camera's place in its words.
+    assert top["north"]["axis"] in ("+X", "-X", "+Y", "-Y") and ("北" in svg)
+    assert f"位置 ({cam[0]:.1f}, {cam[1]:.1f})" in top_words(top)[0]
+
+
+def test_names_keep_clear_of_each_other():
+    plan = copy.deepcopy(_plan())
+    plan["place"] = {"name": "家", "file": "x.blend"}
+    cam = plan["camera"]["positionM"]
+    level = build_top(plan)["camera"]["levelDir"]
+    centre = [cam[0] + level[0] * 10, cam[1] + level[1] * 10]
+    ring = [[centre[0] + x, centre[1] + y] for x, y in ((-3, -3), (3, -3), (3, 3), (-3, 3))]
+    outlines = [{"name": f"thing_{i}", "footprintM": ring, "ringsM": [ring], "heightM": [0, 2], "ground": False} for i in range(8)]
+    svg = to_svg(build_top(plan, outlines))
+    spots = set()
+    for i in range(8):
+        if f">thing_{i}<" in svg:
+            line = next(row for row in svg.splitlines() if f">thing_{i}<" in row)
+            spots.add(line.split('y="')[1].split('"')[0])
+    # Eight names on one spot: the ones with room are each on their own line, the rest left out.
+    assert 2 <= len(spots) <= 5 and len(spots) == sum(f">thing_{i}<" in svg for i in range(8))
