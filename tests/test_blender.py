@@ -940,8 +940,22 @@ def test_a_town_stands_on_the_land_a_place_was_modelled_on(tmp_path):
     plan = json.loads((tmp_path / "blockout" / "panel1" / r["take"] / "plan.json").read_text(encoding="utf-8"))
     around = plan["surroundings"]
     assert around["street"] == {"axis": "X", "atM": -20.0, "widthM": 5.0}
-    # From beyond the house and the tree (the farthest of them about 50 m off), not from the land's edge 170 m off.
-    assert 45 < around["houses"][0]["distanceM"] < 80, around["houses"][0]
+    # From just outside the near band, beside and beyond the house and the tree (none among them, none before them
+    # from the camera), not from the land's edge 170 m off.
+    assert 25 < around["houses"][0]["distanceM"] < 80, around["houses"][0]
+    origin = plan["camera"]["positionM"][:2]
+    for house in around["houses"]:
+        corners = rect(house)
+        assert not (
+            min(x for x, _ in corners) < 6.0
+            and max(x for x, _ in corners) > -9.2
+            and min(y for _, y in corners) < 8.0
+            and max(y for _, y in corners) > -9.2
+        )
+        # The place's things are seen between 42° and 60° from the camera (from +X): a house in those directions is beyond them.
+        for x, y in corners:
+            if 42.0 < math.degrees(math.atan2(y - origin[1], x - origin[0])) < 60.0:
+                assert math.hypot(x - origin[0], y - origin[1]) > 50.0, house
     for house in around["houses"]:
         on_land = all(-150 < x < 150 and -150 < y < 150 for x, y in rect(house))
         assert abs(house["centreM"][2] - (0.4 if on_land else 0.0)) < 2e-3, house  # off the land's edge: on the ground round it

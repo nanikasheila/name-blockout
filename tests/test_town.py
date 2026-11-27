@@ -19,6 +19,7 @@ from name_blockout.top import build_top, to_svg, top_words
 from name_blockout.town import (
     BLOCK_DEEP_M,
     LOT_MAX_M,
+    OUTLINE_CLEAR_M,
     REACH_M,
     STREET_M,
     WIRE_REACH_M,
@@ -28,6 +29,7 @@ from name_blockout.town import (
     place_reach,
     rect,
     seen_reach,
+    through_outline,
     town,
     town_words,
 )
@@ -150,9 +152,9 @@ def test_the_town_is_a_japanese_residential_quarter():
     assert len(kept["wires"]) < len(made["wires"]) and all(set(w["poles"]) <= left for w in kept["wires"])
     hull = outline(place)
     for wall in kept["walls"] + kept["hedges"]:
-        assert off_outline(hull, *wall["fromM"]) > STREET_M and off_outline(hull, *wall["toM"]) > STREET_M
+        assert off_outline(hull, *wall["fromM"]) > OUTLINE_CLEAR_M and off_outline(hull, *wall["toM"]) > OUTLINE_CLEAR_M
     for car in kept["cars"]:
-        assert off_outline(hull, *car["centreM"][:2]) > STREET_M
+        assert off_outline(hull, *car["centreM"][:2]) > OUTLINE_CLEAR_M
 
 
 def test_a_street_runs_where_the_place_s_road_does_and_along_either_axis():
@@ -237,7 +239,7 @@ def test_only_what_is_beyond_the_place_is_kept():
     for item in (
         [q for h in yard["houses"] for q in rect(h)] + [t["centreM"] for t in yard["trees"]] + [p["centreM"] for p in yard["poles"]]
     ):
-        assert off_outline(hull, item[0], item[1]) > STREET_M
+        assert off_outline(hull, item[0], item[1]) > OUTLINE_CLEAR_M
     assert off_outline([(0.0, 0.0), (10.0, 0.0)], 5.0, 3.0) == 3.0 and off_outline([], 1.0, 1.0) == math.inf
     # Nothing on the place's own ground either, however far it goes.
     lot = (-30.0, -30.0, 30.0, 30.0)
@@ -250,6 +252,39 @@ def test_only_what_is_beyond_the_place_is_kept():
     assert max(land[2] - land[0], land[3] - land[1]) > LOT_MAX_M
     assert beyond(made, place, origin, grounds=[land])["houses"] == kept["houses"]
     assert "家" in town_words(kept) and "入りませんでした" in town_words({**kept, "houses": []})
+
+
+def test_across_the_street_from_the_place_the_town_comes_near_and_a_plot_s_things_go_with_its_house():
+    """Standing in the street before a place (a house and its wall on the street's far side), looking along the
+    street: the plots on the street's near side are not behind the place from the camera, so their houses stand
+    there as near as the near band lets them; beyond the place's own stretch of the far side the town carries on."""
+    data, shot = looking_down()
+    shot["ruler"] = {"points": 2, "horizonMm": [[20, 52], [107, 52]], "vanishingMm": [[70, 52], [-900, 52]]}
+    shot["camera"] = {"heightM": 1.6, "positionM": [-40, -17.5, 1.6], "lensMm": 32}
+    camera = fit_camera(shot)
+    origin = camera.position[:2]
+    made = town(camera, {"seed": 4, "street": {"axis": "X", "atM": -17.0}})
+    # The place: north of the street (its wall along the street's edge, y −14.5), from x −30 to 60.
+    place = [(x, y) for x in range(-30, 61, 5) for y in (-14.5, 0.0, 14.0)]
+    hull = outline(place)
+    assert through_outline(hull, origin, 0.0) == 0.0  # along the street: past the place
+    assert through_outline(hull, origin, 20.0) > 90.0  # into the place and out at its far end
+    assert through_outline(hull, (0.0, 0.0), 0.0) == pytest.approx(60.0)  # from inside it
+    kept = beyond(made, place, origin)
+    south = [h for h in kept["houses"] if h["centreM"][1] < -19.5]
+    assert south and min(h["distanceM"] for h in south) < 45.0
+    for house in kept["houses"]:
+        assert all(off_outline(hull, x, y) > OUTLINE_CLEAR_M for x, y in rect(house))
+    # Walls line the street's near side before those houses.
+    assert any(w["fromM"][1] == w["toM"][1] and -19.7 < w["fromM"][1] < -19.4 for w in kept["walls"])
+    # What stood on a dropped house's plot is gone with it; a car park's cars stand by themselves.
+    there = {h["id"] for h in kept["houses"]}
+    gone = {h["id"] for h in made["houses"]} - there
+    assert gone
+    for kind in ("walls", "hedges", "posts", "cars", "trees"):
+        assert all(item["of"] is None or item["of"] in there for item in kept[kind]), kind
+        assert any(item["of"] in gone for item in made[kind]), kind
+    assert any(car["of"] is None for car in made["cars"])
 
 
 def test_the_plan_lays_the_town_clear_of_the_author_s_things_and_the_top_view_shows_it():

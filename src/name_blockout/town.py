@@ -19,8 +19,9 @@ same instruction gives the same town.
 
 The town never hides the place: along each direction from the camera it starts beyond the farthest thing the place
 (and the author's own things) has there, a street's width farther; nothing of it stands among the place's things
-(within the outline drawn round them all, a street's width off) or on the place's own lot (`beyond`; a ground of
-the place wider than LOT_MAX_M is land, not a lot: the town stands on it). Nor does it come into the near band
+(within the outline drawn round them all, or OUTLINE_CLEAR_M off it) or on the place's own lot (`beyond`; a ground
+of the place wider than LOT_MAX_M is land, not a lot: the town stands on it). Where the camera looks past the
+place, across the street from it, the town's plots front the street as everywhere else. Nor does it come into the near band
 (NEAR_M from the camera): what stands near, and between the camera and the place, is the author's to put.
 """
 
@@ -61,6 +62,8 @@ MAX_HOUSES = 220
 REACH_BEYOND_SEEN_M = 20.0
 #: Nothing of the town stands within this of the place's own lot (its ground, its lawn)…
 GROUND_CLEAR_M = 1.0
+#: …nor within this of the outline round the place's things (its walls, its plants)…
+OUTLINE_CLEAR_M = 1.0
 #: …and a ground of the place longer than this is no lot but the land the place was modelled on (a plane out to
 #: the horizon): the town stands on it.
 LOT_MAX_M = 100.0
@@ -353,21 +356,25 @@ def town(camera: Camera, spec: dict | None = None, reach: float | None = None) -
                     plot = _plot(rng, x, wide, street_y, faces, back_wall=side == 0, last=i == len(plots) - 1)
                     x += wide
                     house = plot["house"]
+                    # What stands on a plot goes with its house (`of`: the house's id; none on a car park or an
+                    # empty lot): a car or a gatepost is not left standing where its house is not.
+                    of = None
                     if house is not None:
+                        of = f"r{row}b{block}s{side}p{i}"
                         dist = within(house["centreM"][0], house["centreM"][1])
-                        if dist is not None:
-                            house = {**house, "centreM": at(*house["centreM"][:2]), "front": fronts[faces]}
-                            if min(math.hypot(qx - px, qy - py) for qx, qy in rect(house)) > NEAR_M:
-                                houses.append({"id": f"r{row}b{block}s{side}p{i}", **house, "distanceM": round(dist, 1)})
+                        house = {**house, "centreM": at(*house["centreM"][:2]), "front": fronts[faces]}
+                        if dist is None or min(math.hypot(qx - px, qy - py) for qx, qy in rect(house)) <= NEAR_M:
+                            continue
+                        houses.append({"id": of, **house, "distanceM": round(dist, 1)})
                     for kind, kept in (("walls", walls), ("hedges", hedges)):
                         for item in plot[kind]:
                             (u0, v0), (u1, v1) = item["fromM"], item["toM"]
                             if all(clear_of_near(*q) for q in ((u0, v0), (u1, v1), ((u0 + u1) / 2, (v0 + v1) / 2))):
-                                kept.append({**item, "fromM": at(u0, v0)[:2], "toM": at(u1, v1)[:2]})
+                                kept.append({**item, "fromM": at(u0, v0)[:2], "toM": at(u1, v1)[:2], "of": of})
                     for kind, kept in (("posts", posts), ("cars", cars), ("trees", trees)):
                         for item in plot[kind]:
                             if clear_of_near(*item["centreM"][:2]):
-                                item = {**item, "centreM": at(*item["centreM"][:2])}
+                                item = {**item, "centreM": at(*item["centreM"][:2]), "of": of}
                                 # A car stands nose to its street.
                                 kept.append({**item, "front": fronts[faces]} if kind == "cars" else item)
         # Poles along the street's far edge, in the street before the plots' walls (not in a cross street's mouth),
@@ -397,6 +404,12 @@ def town(camera: Camera, spec: dict | None = None, reach: float | None = None) -
             if ok0 and ok1 and math.hypot(x - px, y - py) <= WIRE_REACH_M:
                 wires.append({"poles": [id0, id1], "fromM": at(u0, v0)[:2], "toM": at(u1, v1)[:2]})
     houses.sort(key=lambda b: (b["distanceM"], b["id"]))
+    houses = houses[:MAX_HOUSES]
+    there = {h["id"] for h in houses}
+
+    def with_house(items: list[dict]) -> list[dict]:
+        return [item for item in items if item["of"] is None or item["of"] in there]
+
     return {
         "kind": "town",
         "seed": seed,
@@ -404,13 +417,13 @@ def town(camera: Camera, spec: dict | None = None, reach: float | None = None) -
         "streetM": wide_street,
         "street": {"axis": axis, "atM": through, "widthM": wide_street},
         "streets": streets,
-        "houses": houses[:MAX_HOUSES],
-        "trees": trees[: MAX_HOUSES * 3],
+        "houses": houses,
+        "trees": with_house(trees),
         "poles": poles[:MAX_HOUSES],
-        "walls": walls,
-        "hedges": hedges,
-        "posts": posts,
-        "cars": cars,
+        "walls": with_house(walls),
+        "hedges": with_house(hedges),
+        "posts": with_house(posts),
+        "cars": with_house(cars),
         "wires": wires,
     }
 
@@ -479,26 +492,50 @@ def off_outline(hull: list[tuple[float, float]], x: float, y: float) -> float:
     return far
 
 
-def _starts(far: dict[int, float], x: float, y: float, origin) -> float:
-    """Where the town may start in the direction of (x, y): past the place there; where the place has nothing in
-    that direction, past what it has in the nearest direction where it has something."""
-    if not far:
+def through_outline(hull: list[tuple[float, float]], origin, angle_deg: float) -> float:
+    """How far from `origin` a ray toward `angle_deg` (from +X) leaves an outline for the last time; 0 when it
+    never meets it."""
+    if len(hull) < 3:
         return 0.0
-    a = int(math.floor(math.degrees(math.atan2(y - origin[1], x - origin[0])))) % 360
-    for step in range(181):
-        found = [far[k % 360] for k in (a - step, a + step) if k % 360 in far]
-        if found:
-            return max(found)
-    return 0.0
+    dx, dy = math.cos(math.radians(angle_deg)), math.sin(math.radians(angle_deg))
+    far = 0.0
+    for (ax, ay), (bx, by) in zip(hull, hull[1:] + hull[:1]):
+        ex, ey = bx - ax, by - ay
+        cross = dx * ey - dy * ex
+        if abs(cross) < 1e-9:
+            continue
+        t = ((ax - origin[0]) * ey - (ay - origin[1]) * ex) / cross
+        u = ((ax - origin[0]) * dy - (ay - origin[1]) * dx) / cross
+        if t > 0.0 and -1e-9 <= u <= 1.0 + 1e-9:
+            far = max(far, t)
+    return far
+
+
+def _starts(far: dict[int, float], hull, x: float, y: float, origin) -> float:
+    """Where the town may start in the direction of (x, y): past what the place has there; where it has nothing
+    in that direction, past the outline round its things if the direction goes through it (a gap between two of
+    its things is the place's), and anywhere if it does not (that way the camera looks past the place: across the
+    street from it, the town's houses come as near as the near band lets them)."""
+    angle = math.degrees(math.atan2(y - origin[1], x - origin[0]))
+    found = far.get(int(math.floor(angle)) % 360)
+    return found if found is not None else through_outline(hull, origin, angle)
 
 
 def beyond(made: dict, points, origin, gap: float | None = None, grounds=()) -> dict:
-    """The town with only what stands beyond the place (its things' `points`, x and y) as seen from `origin` (the
-    camera): a house is kept when all its corners are past the place in their directions by `gap` (a street's
-    width); trees and poles by where they stand. Nothing stands among the place's things (inside the outline round
-    all its points, or within `gap` of it: a yard behind a wall is the place's, though it lies beyond the wall), nor
-    on the place's own lots (`grounds`: its grounds, each as x0, y0, x1, y1; one longer than LOT_MAX_M is land the
-    town may stand on). `dropped` counts what was left out."""
+    """The town with only what does not hide the place or stand in it. The place: its things' `points` (x and y),
+    seen from `origin` (the camera).
+
+    - Where the camera looks toward something of the place, the town starts beyond it by `gap` (a street's
+      width): a house is kept when all its corners are; trees, poles, cars and gateposts by where they stand, a
+      wall by its two ends and its middle.
+    - Nothing stands among the place's things: inside the outline round all its points, or within OUTLINE_CLEAR_M
+      of it (a yard behind a wall is the place's, though it lies beyond the wall).
+    - Nothing stands on the place's own lots (`grounds`: its grounds, each as x0, y0, x1, y1; one longer than
+      LOT_MAX_M is land the town may stand on).
+    - What stands on a house's plot goes with the house (`of`), and a wire with its two poles.
+
+    Where the camera looks past the place (across the street from it), the town comes as near as it was laid.
+    `dropped` counts what was left out."""
     gap = made.get("streetM", STREET_M) if gap is None else gap
     far = place_reach(points, origin)
     hull = outline(points)
@@ -509,25 +546,32 @@ def beyond(made: dict, points, origin, gap: float | None = None, grounds=()) -> 
             x0 - GROUND_CLEAR_M < x < x1 + GROUND_CLEAR_M and y0 - GROUND_CLEAR_M < y < y1 + GROUND_CLEAR_M for x0, y0, x1, y1 in grounds
         ):
             return False
-        if off_outline(hull, x, y) <= gap:
+        if off_outline(hull, x, y) <= OUTLINE_CLEAR_M:
             return False
-        return math.hypot(x - origin[0], y - origin[1]) > _starts(far, x, y, origin) + gap
+        starts = _starts(far, hull, x, y, origin)
+        return starts == 0.0 or math.hypot(x - origin[0], y - origin[1]) > starts + gap
 
     def clear(house: dict) -> bool:
-        if not all(past(x, y) for x, y in rect(house)):
+        # Its corners, the middles of its sides and its own middle (a thin thing of the place could stand behind
+        # the middle of a wide house).
+        corners = rect(house)
+        middles = [((ax + bx) / 2, (ay + by) / 2) for (ax, ay), (bx, by) in zip(corners, corners[1:] + corners[:1])]
+        if not all(past(x, y) for x, y in [*corners, *middles, house["centreM"][:2]]):
             return False
-        # …and no corner of the place's outline inside the house's own plot (the house and `gap` round it).
-        (x0, y0), _, (x1, y1), _ = rect(house, gap)
+        # …and no corner of the place's outline inside the house's own footprint (and a little round it).
+        (x0, y0), _, (x1, y1), _ = rect(house, OUTLINE_CLEAR_M)
         return not any(x0 < x < x1 and y0 < y < y1 for x, y in hull)
 
     def along(item: dict) -> bool:
         (x0, y0), (x1, y1) = item["fromM"], item["toM"]
         return all(past(x, y) for x, y in ((x0, y0), (x1, y1), ((x0 + x1) / 2, (y0 + y1) / 2)))
 
-    def standing(kind: str) -> list[dict]:
-        return [t for t in made.get(kind) or [] if past(t["centreM"][0], t["centreM"][1])]
-
     houses = [h for h in made["houses"] if clear(h)]
+    gone = {h["id"] for h in made["houses"]} - {h["id"] for h in houses}
+
+    def standing(kind: str) -> list[dict]:
+        return [t for t in made.get(kind) or [] if t.get("of") not in gone and past(t["centreM"][0], t["centreM"][1])]
+
     trees, poles = standing("trees"), standing("poles")
     left = {p["id"] for p in poles if "id" in p}
     dropped = {
@@ -540,8 +584,8 @@ def beyond(made: dict, points, origin, gap: float | None = None, grounds=()) -> 
         "houses": houses,
         "trees": trees,
         "poles": poles,
-        "walls": [w for w in made.get("walls") or [] if along(w)],
-        "hedges": [w for w in made.get("hedges") or [] if along(w)],
+        "walls": [w for w in made.get("walls") or [] if w.get("of") not in gone and along(w)],
+        "hedges": [w for w in made.get("hedges") or [] if w.get("of") not in gone and along(w)],
         "posts": standing("posts"),
         "cars": standing("cars"),
         # A wire hangs between two poles: without one of them it is gone.
@@ -565,5 +609,5 @@ def town_words(made: dict) -> str:
     wires = f"（電線 {len(made['wires'])} 区間）" if made.get("wires") else ""
     return (
         f"まわりは市街地（日本の住宅街）: 家 {len(made['houses'])} 軒（カメラから {near:.0f}〜{far:.0f} m）"
-        f"・庭木 {len(made['trees'])} 本・電柱 {len(made['poles'])} 本{wires}{more}。{runs}。場所の物より向こう、場所の物の囲みと敷地の外にだけ置く（道幅 {made['streetM']:g} m あけて、近景 {NEAR_M:g} m の中には置かない）"
+        f"・庭木 {len(made['trees'])} 本・電柱 {len(made['poles'])} 本{wires}{more}。{runs}。場所の物を隠さない所（場所の物より道幅 {made['streetM']:g} m 向こう）、場所の物の囲みと敷地の外にだけ置く（近景 {NEAR_M:g} m の中には置かない）"
     )
