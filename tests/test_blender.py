@@ -531,53 +531,102 @@ def test_a_place_indoors_is_cut_as_a_floor_plan():
 
 
 @needs_blender
-def test_joints_grey_and_outlines_black():
-    """A line inside a floor (up on both sides) turns grey; the floor's edge against a wall stays black; a line inside
-    ベタ turns white, the ベタ's outline stays black."""
+def test_lines_on_beta_turn_white_and_a_narrow_beta_keeps_black_lines():
+    """A line inside ベタ turns white, the ベタ's outline stays black; on a strip of ベタ narrower than a few reaches
+    (a dark fascia) the lines stay black (white ones would be specks)."""
     import numpy as np
 
-    from name_blockout.blender.develop import grey_joints, white_on_beta
+    from name_blockout.blender.develop import white_on_beta
 
     h, w = 40, 60
-    lines = np.zeros((h, w, 4), dtype=np.float32)
-    lines[:, 20, 3] = 1.0  # a joint across the floor
-    lines[30, :, 3] = 1.0  # the floor's edge: below it a wall
-    up = np.zeros((h, w), dtype=bool)
-    up[:30] = True
-    out = grey_joints(lines, up, 3)
-    assert out[10, 20, 0] > 0.2 and out[10, 20, 3] < 1.0
-    assert out[30, 40, 0] == 0.0 and out[30, 40, 3] == 1.0
     tone = np.ones((h, w, 4), dtype=np.float32)
     tone[5:25, 30:55, :3] = 0.0  # a ベタ block
     lines = np.zeros((h, w, 4), dtype=np.float32)
     lines[15, 30:55, 3] = 1.0  # a seam across it, reaching its edges
     done = white_on_beta(lines, tone, 3)
     assert done[15, 42, 0] == 1.0 and done[15, 30, 0] == 0.0
-
-
-@needs_blender
-def test_a_joint_greys_up_to_the_wall_and_a_narrow_beta_keeps_black_lines():
-    """A joint's end by a wall's foot greys too (no black whisker), the foot stays black; on a strip of ベタ
-    narrower than a few reaches (a dark fascia) the lines stay black (white ones would be specks)."""
-    import numpy as np
-
-    from name_blockout.blender.develop import grey_joints, white_on_beta
-
-    h, w = 40, 60
-    lines = np.zeros((h, w, 4), dtype=np.float32)
-    lines[:, 20, 3] = 1.0  # a joint across the floor
-    lines[30, :, 3] = 1.0  # the wall's foot: below it the wall
-    up = np.zeros((h, w), dtype=bool)
-    up[:30] = True
-    plain = grey_joints(lines, up, 4)
-    tipped = grey_joints(lines, up, 4, tip=2)
-    assert plain[28, 20, 0] == 0.0 and tipped[28, 20, 0] > 0.2
-    assert tipped[30, 40, 0] == 0.0 and tipped[30, 20, 0] == 0.0
     tone = np.ones((h, w, 4), dtype=np.float32)
     tone[10:16, 5:55, :3] = 0.0  # a dark fascia, 6 px high
     lines = np.zeros((h, w, 4), dtype=np.float32)
     lines[13, 5:55, 3] = 1.0
     assert white_on_beta(lines, tone, 2)[13, 30, 0] == 0.0
+
+
+@needs_blender
+def test_texture_lines_end_with_distance_and_are_never_paler():
+    """A floor's joints are kept whole up to TEXTURE_REACH foregrounds off and gone a little farther."""
+    import numpy as np
+
+    from name_blockout.blender.develop import TEXTURE_END, TEXTURE_REACH, texture_reach
+
+    distance = np.array([[1.0, 5.0 * TEXTURE_REACH, 5.0 * TEXTURE_REACH * (1 + TEXTURE_END), 500.0]], dtype=np.float32)
+    kept = texture_reach(distance, 5.0)
+    assert kept.tolist() == [[1.0, 1.0, 0.0, 0.0]]
+    # The band where a line ends is short: a tenth of its reach.
+    between = texture_reach(np.linspace(1.0, 100.0, 1000, dtype=np.float32)[None], 5.0)
+    assert ((between > 0) & (between < 1)).mean() < 0.03
+
+
+@needs_blender
+def test_tops_in_the_light_are_the_lightest():
+    """A face looking up in the light is TOP_LIGHTER less dense (a concrete roof's top comes out white); a dark
+    tone (a solar panel's cells) and ベタ stay."""
+    import numpy as np
+
+    from name_blockout.blender.develop import TOP_LIGHTER, top_lighter
+
+    shown = np.ones((1, 5, 3), dtype=np.float32)
+    for i, density in enumerate((0.1, 0.35, 0.55, 1.0, 0.1)):
+        shown[0, i] = 1.0 - density
+    tops = np.array([[True, True, True, True, False]])
+    out = 1.0 - top_lighter(shown, tops)[0, :, 0]
+    assert np.allclose(out, [0.0, 0.35 - TOP_LIGHTER, 0.55, 1.0, 0.1], atol=1e-6)
+
+
+@needs_blender
+def test_where_two_materials_meet_on_a_ground_the_edge_is_marked():
+    import bpy
+
+    from name_blockout.blender.scene import mark_material_borders
+
+    mesh = bpy.data.meshes.new("lot")
+    # Three squares in a row: lawn, lawn, path.
+    verts = [(x, y, 0.0) for y in (0, 1) for x in (0, 1, 2, 3)]
+    mesh.from_pydata(verts, [], [(0, 1, 5, 4), (1, 2, 6, 5), (2, 3, 7, 6)])
+    for name in ("grass", "pave"):
+        mesh.materials.append(bpy.data.materials.new(name))
+    mesh.polygons[2].material_index = 1
+    obj = bpy.data.objects.new("lot", mesh)
+    assert mark_material_borders(obj) == 1
+    marked = [tuple(sorted(e.vertices)) for e, m in zip(mesh.edges, mesh.attributes["freestyle_edge"].data) if m.value]
+    assert marked == [(2, 6)]
+    # Two pieces that share no edge (a path laid beside a lawn, 1 cm higher): the edge where they lie against each
+    # other is marked once; the lot's own outer edges are not.
+    apart = bpy.data.meshes.new("apart")
+    verts = [(0, 0, 0), (2, 0, 0), (2, 1, 0), (0, 1, 0), (2, 0, 0.01), (3, 0, 0.01), (3, 1, 0.01), (2, 1, 0.01)]
+    apart.from_pydata(verts, [], [(0, 1, 2, 3), (4, 5, 6, 7)])
+    for name in ("grass", "pave"):
+        apart.materials.append(bpy.data.materials[name])
+    apart.polygons[1].material_index = 1
+    obj = bpy.data.objects.new("apart", apart)
+    assert mark_material_borders(obj) == 1
+    marked = [tuple(sorted(e.vertices)) for e, m in zip(apart.edges, apart.attributes["freestyle_edge"].data) if m.value]
+    assert marked in ([(1, 2)], [(4, 7)])
+    # A kerb standing on the paving (its foot's open edges lie on the paving's face): its foot is marked.
+    kerb = bpy.data.meshes.new("kerb")
+    verts = [(0, 0, 0), (4, 0, 0), (4, 4, 0), (0, 4, 0)]
+    verts += [(1, 1, 0), (3, 1, 0), (3, 1.2, 0), (1, 1.2, 0), (1, 1, 0.15), (3, 1, 0.15), (3, 1.2, 0.15), (1, 1.2, 0.15)]
+    sides = [(4, 5, 9, 8), (5, 6, 10, 9), (6, 7, 11, 10), (7, 4, 8, 11), (8, 9, 10, 11)]
+    kerb.from_pydata(verts, [], [(0, 1, 2, 3), *sides])
+    for name in ("pave", "grass"):
+        kerb.materials.append(bpy.data.materials[name])
+    for poly in list(kerb.polygons)[1:]:
+        poly.material_index = 1
+    assert mark_material_borders(bpy.data.objects.new("kerb", kerb)) == 4
+    # One material: nothing to tell apart.
+    plain = bpy.data.meshes.new("plain")
+    plain.from_pydata(verts, [], [(0, 1, 5, 4), (1, 2, 6, 5)])
+    assert mark_material_borders(bpy.data.objects.new("plain", plain)) == 0
 
 
 @needs_blender
@@ -612,25 +661,6 @@ def test_majority_removes_speckles_keeps_edges():
 
 
 @needs_blender
-def test_a_step_edge_is_not_a_joint():
-    """A line between two surfaces looking up at two heights (a step's edge) stays black; a joint in one floor greys."""
-    import numpy as np
-
-    from name_blockout.blender.develop import grey_joints
-
-    h, w = 40, 60
-    lines = np.zeros((h, w, 4), dtype=np.float32)
-    lines[20, :, 3] = 1.0  # the step's edge
-    lines[:, 40, 3] = 1.0  # a joint
-    up = np.ones((h, w), dtype=bool)
-    height = np.zeros((h, w), dtype=np.float32)
-    height[:20] = 0.2  # the step's top, 20 cm over the floor
-    out = grey_joints(lines, up, 3, height)
-    assert out[20, 10, 0] == 0.0 and out[20, 10, 3] == 1.0
-    assert out[5, 40, 0] > 0.2 and out[30, 40, 0] > 0.2
-
-
-@needs_blender
 def test_device_cpu_when_asked_or_no_gpu(monkeypatch):
     from name_blockout.blender import render
 
@@ -643,3 +673,94 @@ def test_device_cpu_when_asked_or_no_gpu(monkeypatch):
     assert render.choose_device(4394 * 1928) == "GPU"
     monkeypatch.setattr(render, "_chosen", None)
     assert render.choose_device() in ("CPU", "GPU")
+
+
+def _lot_from_above(folder: Path) -> None:
+    """A place seen from above: a flat-roofed block (its roof a concrete slab) with a glass front, on a lot that is
+    lawn on one side and paving on the other."""
+    import bpy
+
+    bpy.ops.wm.read_factory_settings(use_empty=True)
+    coll = bpy.data.collections.new("家")
+    bpy.context.scene.collection.children.link(coll)
+
+    def box(name, lo, hi, material):
+        (x0, y0, z0), (x1, y1, z1) = lo, hi
+        verts = [(x, y, z) for z in (z0, z1) for y in (y0, y1) for x in (x0, x1)]
+        faces = [(0, 2, 3, 1), (4, 5, 7, 6), (0, 1, 5, 4), (2, 6, 7, 3), (0, 4, 6, 2), (1, 3, 7, 5)]
+        mesh = bpy.data.meshes.new(name)
+        mesh.from_pydata(verts, [], faces)
+        mesh.materials.append(bpy.data.materials.get(material) or bpy.data.materials.new(material))
+        coll.objects.link(bpy.data.objects.new(name, mesh))
+
+    box("shell", (-4, 0, 0), (4, 6, 3), "Plaster")
+    box("slab", (-5, -1, 3), (5, 7, 3.3), "concrete")
+    box("glass_front", (-3, -0.05, 0.3), (3, 0, 2.7), "Glass")
+    lot = bpy.data.meshes.new("site_ground")
+    xs = (-30, 0, 30)
+    verts = [(x, y, 0.0) for y in (-30, 30) for x in xs]
+    lot.from_pydata(verts, [], [(0, 1, 4, 3), (1, 2, 5, 4)])
+    for name in ("grass", "pave"):
+        lot.materials.append(bpy.data.materials.new(name))
+    lot.polygons[1].material_index = 1
+    coll.objects.link(bpy.data.objects.new("site_ground", lot))
+    folder.mkdir(parents=True, exist_ok=True)
+    bpy.ops.wm.save_as_mainfile(filepath=str(folder / "lot.blend"))
+    (folder / "素材.json").write_text(
+        json.dumps({"assets": [{"name": "家", "kind": "place", "file": "lot.blend", "license": "own"}]}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+
+@needs_blender
+def test_develop_from_above_roof_white_windows_dark_lines_black(tmp_path):
+    """A house seen from above by day, from an instruction written out at 150 dpi: developed at 300 dpi all the
+    same; its concrete roof's top in the light is white, its glass front dark; where the lawn meets the paving the
+    lot has a line; and no line is a pale hair."""
+    import bpy
+
+    from name_blockout.blender.picture import load
+    from name_blockout.camera import fit_camera
+    from name_blockout.instruction import frame_of
+    from name_blockout.pipeline import run_blockout
+
+    _lot_from_above(tmp_path / "素材")
+    data = json.loads((ROOT / "examples" / "develop" / "指示.json").read_text(encoding="utf-8"))
+    data["folders"] = {"assets": "素材"}
+    shot = data["shots"][0]
+    shot["objects"], shot["figures"] = [], []
+    shot["frame"] = {"boxMm": [17, 17, 110, 77], "dpi": 150, "shapeMm": [[20, 20], [107, 20], [107, 74], [20, 74]]}
+    shot["ruler"] = {"points": 2, "horizonMm": [[20, -23], [107, -23]], "vanishingMm": [[150, -23], [-40, -23]]}
+    shot["camera"] = {"heightM": 15.0, "positionM": [-20, -22, 15.0], "lensMm": 37}
+    shot["place"] = {"asset": "家"}
+    shot["look"]["materials"] = []
+    (tmp_path / "指示.json").write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+
+    r = run_blockout(tmp_path / "指示.json", log=lambda *_: None, develop=True)[0]
+    plan = json.loads((tmp_path / "blockout" / "panel1" / r["take"] / "plan.json").read_text(encoding="utf-8"))
+    assert plan["frame"]["dpi"] == 150 and plan["render"]["dpi"] == 300
+    assert plan["render"]["sizePx"] == [frame_of({**shot["frame"], "dpi": 300}).width, frame_of({**shot["frame"], "dpi": 300}).height]
+    assert any("300dpi で描きます" in n for n in plan["notes"])
+
+    camera = fit_camera(shot)
+
+    def at(point):
+        x, y = camera.project(point)
+        return round(y * 2), round(x * 2)  # the instruction's pixels (150 dpi) → the picture's (300 dpi)
+
+    tone = load(tmp_path / "案" / "panel1" / r["take"] / "トーン.png")
+    roof, glass = at((2.0, 4.0, 3.3)), at((0.0, -0.05, 1.5))
+    assert tone[roof][3] > 0.99 and tone[roof][:3].min() > 0.99, tone[roof]  # コンクリート 0.1 − the top's 0.15: white
+    assert 0.35 < tone[glass][:3].max() < 0.55, tone[glass]  # a dark tone (density 0.5–0.6), not a solid black
+    # The lot's two materials are told apart by a line (both are left white).
+    bpy.ops.wm.open_mainfile(filepath=str(tmp_path / "blockout" / "panel1" / r["take"] / "scene.blend"))
+    lot = bpy.data.objects["site_ground"]
+    assert lot["nb_place_materials"] == ["白地", "白地"] and sum(m.value for m in lot.data.attributes["freestyle_edge"].data) == 1
+    lines = load(tmp_path / "案" / "panel1" / r["take"] / "線画.png")
+    y, x = at((0.0, -12.0, 0.0))  # on the lawn's edge against the paving, before the house
+    assert lines[y - 3 : y + 4, x - 3 : x + 4, 3].max() > 0.9
+    # Lines are black: next to none of the picture is a faint line (a line's smooth edge is a pixel wide at most).
+    alpha = lines[..., 3]
+    faint, full = ((alpha > 0.05) & (alpha < 0.5)).sum(), (alpha >= 0.5).sum()
+    assert full > 500 and faint < full, (faint, full)
+    assert lines[alpha > 0.05][:, :3].max() < 0.05  # and none is grey
