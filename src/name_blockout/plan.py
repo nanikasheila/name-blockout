@@ -18,14 +18,17 @@ from .imagesize import image_size
 from .instruction import Frame, frame_of
 from .look import DEFAULT_NORTH, aimed, lighting, setting_of
 from .materials import assign
+from .parts import assembly, floating_words
 from .room import WALL_LABELS, build_room, room_of, room_words, window_heading
 from .scope import hashes, object_hashes
 from .shapes import KIND_LABELS as SHAPE_LABELS
 from .shapes import kind_of, shape_of
 from .sizes import usual_size
-from .solve import DEFAULT_FIGURE_M, fit_box, fit_figure
+from .solve import DEFAULT_FIGURE_M, fit_box, fit_figure, place_box
 
 PREVIEW_DPI = 150
+#: A thing placed on the top view that fills less than this of its range on the panel is noted (IoU).
+PLACED_OVERLAP = 0.6
 PLAN_FORMAT = "name-blockout/plan"
 
 
@@ -126,7 +129,22 @@ def build_plan(data: dict, shot: dict, instruction_path: str | Path | None = Non
         placed = fit_box(
             camera, target, size=size, along=along, on_ground=obj.get("onGround", True), prior=None if size else usual_size(obj["label"])
         )
+        footless = bool(placed.note)
+        if footless:
+            notes.append(f"物「{obj['label']}」: {placed.note}")
+        if obj.get("positionM"):
+            # Placed on the top view: it stands where the author (or a correction) put it, at the size given or the
+            # size that filled the panel's range; how well it then fills that range is told, not forced.
+            placed = place_box(camera, target, obj["positionM"], placed.size, along)
         entry = {"id": obj["id"], "label": obj["label"], "placed": placed.as_dict(), "fixedSize": bool(size)}
+        if footless and not obj.get("positionM"):
+            entry["footless"] = True
+        if obj.get("positionM"):
+            entry["fixedPlace"] = True
+            if placed.iou < PLACED_OVERLAP:
+                notes.append(
+                    f"物「{obj['label']}」: 俯瞰図の位置に置くと、ネームの範囲との重なりは {placed.iou * 100:.0f}%（位置か大きさ、どちらかがネームと違う）"
+                )
         entry.update(_band(camera, obj, placed.centre, notes, obj["label"]))
         if entry["distanceM"] > parallax_free_m(camera, camera.focal_px * render_frame.dpi / frame.dpi) and not obj.get("band"):
             notes.append(
@@ -423,6 +441,11 @@ def build_develop_plan(data: dict, shot: dict, instruction_path: str | Path | No
             plain.append(o["label"])
     if made:
         plan["notes"].append("形を作った: " + "・".join(made))
+    # A part that neither stands on the ground nor touches one that does is a mistake in the numbers: say so
+    # before it is drawn floating.
+    for o in plan["objects"]:
+        if o.get("parts"):
+            plan["notes"] += floating_words(o["label"], assembly(o["parts"]))
     if plain:
         plan["notes"].append(
             "形のひな形がない物: " + "・".join(plain) + "（箱のまま。objects[].shape に部品を書くか、素材を足してください）"

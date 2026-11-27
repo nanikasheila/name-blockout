@@ -132,6 +132,23 @@ def test_develop_example(tmp_path):
     # A Blockout of the same shot does not count as the development's last build.
     again = run_blockout(tmp_path / "指示.json", preview_dpi=60, only_changed=True, log=lambda *_: None, develop=True)
     assert again[0]["status"] == "unchanged"
+    # The layout from above is written with the take (俯瞰図), and the take can go to a critic: beside a reference
+    # (here the Blockout-like line picture of the same take: emptier than the finished one, so nothing is too empty).
+    assert (tmp_path / "俯瞰図" / "panel1.svg").exists() and (tmp_path / "blockout" / "panel1" / "1" / "俯瞰図.svg").exists()
+    from name_blockout.cli import main
+
+    reference = tmp_path / "案" / "panel1" / "1" / "線画.png"
+    assert main(["critique", str(tmp_path / "指示.json"), "--shot", "panel1", "--reference", str(reference), "--json"]) == 0
+    pack = tmp_path / "講評" / "panel1" / "1"
+    numbers = json.loads((pack / "数字.json").read_text(encoding="utf-8"))
+    assert numbers["take"] == "1" and numbers["density"]["sameFraming"] and numbers["density"]["pass"], numbers["density"]
+    assert numbers["lines"]["widthsMm"] and numbers["density"]["take"]["dark"] > 0
+    sheet = bpy.data.images.load(str(pack / "並べた絵.png"))
+    assert sheet.size[0] > 2 * 0.9 * fw and sheet.size[1] == fh
+    answer = tmp_path / "答え.json"
+    answer.write_text(json.dumps({"problems": []}), encoding="utf-8")
+    assert main(["critique", str(tmp_path / "指示.json"), "--shot", "panel1", "--answer", str(answer)]) == 0
+    assert (pack / "講評.json").exists()
 
 
 @needs_blender
@@ -388,6 +405,12 @@ def test_develop_in_a_place(tmp_path):
     assert (tmp_path / "案" / "panel1" / "1" / "完成.png").exists()
     plan = json.loads((tmp_path / "blockout" / "panel1" / "2" / "plan.json").read_text(encoding="utf-8"))
     assert plan["far"] and any("遠景が決まっていないので" in n for n in plan["notes"])
+    # The top view holds what the place holds, as it stands in the scene (the van where it was moved to).
+    top = json.loads((tmp_path / "俯瞰図" / "panel1.json").read_text(encoding="utf-8"))
+    outlines = {o["name"]: o for o in top["place"]["outlines"]}
+    assert outlines["site_ground"]["ground"] and not outlines["VAN"]["ground"]
+    assert "D_Aunt" not in outlines and "Sign_board" not in outlines
+    assert (tmp_path / "blockout" / "panel1" / "2" / "俯瞰図.svg").exists()
     bpy.ops.wm.open_mainfile(filepath=str(tmp_path / "blockout" / "panel1" / "2" / "scene.blend"))
     names = {o.name for o in bpy.data.objects}
     assert (
@@ -396,6 +419,13 @@ def test_develop_in_a_place(tmp_path):
         and not [o for o in bpy.data.objects if o.type == "LIGHT" and not o.name.startswith("NB_")]
     )
     van = bpy.data.objects["VAN"]
+    from mathutils import Vector
+
+    corners = [van.matrix_world @ Vector(c) for c in van.bound_box]
+    # Each thing by its own outline (rings), not one convex blob; a ground by its edge alone.
+    assert outlines["VAN"]["ringsM"] and "ringsM" not in outlines["site_ground"] and not top["place"]["cut"]
+    van_x, van_y = ([q[i] for q in outlines["VAN"]["footprintM"]] for i in range(2))
+    assert abs(min(van_x) - min(c.x for c in corners)) < 0.06 and abs(max(van_y) - max(c.y for c in corners)) < 0.06
     assert tuple(round(v, 3) for v in van.location) == (8.4, -18.7, 1.0) and abs(van.rotation_euler.z - 1.5708) < 1e-3
     assert bpy.data.objects["Roof"]["nb_place_materials"] == ["瓦"] and bpy.data.objects["Tree_leaves"].get("nb_foliage")
     # Left out of the .blend's renders: not in the place (unless shown); a dark paint is ベタ; panels outline only.
@@ -442,6 +472,62 @@ def test_develop_in_a_place(tmp_path):
     light = json.loads((tmp_path / "blockout" / "panel1" / r["take"] / "check.json").read_text(encoding="utf-8"))
     faces = next(c for c in light["checks"] if c["name"] == "影の向き")["faces"]
     assert faces["sunny"][1] > 0 and faces["sunny"][0] / faces["sunny"][1] > 0.85, faces
+
+
+@needs_blender
+def test_a_place_indoors_is_cut_as_a_floor_plan():
+    """A camera in a room: the place is cut 1.2 m over the floor (walls as lines, the roof and the lamp left out,
+    the table by its outline); a camera in the garden sees the place whole."""
+    import bpy
+
+    from name_blockout.blender import measure as bmeasure
+    from name_blockout.blender import scene as bscene
+
+    bscene.reset()
+
+    def boxes(name, items):
+        verts, faces = [], []
+        for x0, y0, z0, x1, y1, z1 in items:
+            k = len(verts)
+            verts += [(x, y, z) for z in (z0, z1) for y in (y0, y1) for x in (x0, x1)]
+            faces += [(k, k + 1, k + 3, k + 2), (k + 4, k + 5, k + 7, k + 6), (k, k + 1, k + 5, k + 4)]
+            faces += [(k + 2, k + 3, k + 7, k + 6), (k, k + 2, k + 6, k + 4), (k + 1, k + 3, k + 7, k + 5)]
+        mesh = bpy.data.meshes.new(name)
+        mesh.from_pydata(verts, [], faces)
+        obj = bpy.data.objects.new(name, mesh)
+        bpy.context.scene.collection.objects.link(obj)
+        return obj
+
+    floor = 0.3
+    walls = [(-4, -3, floor, 4, -2.8, 2.9), (-4, 2.8, floor, 4, 3, 2.9), (-4, -3, floor, -3.8, 3, 2.9), (3.8, -3, floor, 4, 3, 2.9)]
+    things = [
+        boxes("shell", walls + [(-4, -3, 0, 4, 3, floor)]),
+        boxes("roof", [(-4.5, -3.5, 2.9, 4.5, 3.5, 3.1)]),
+        boxes("table", [(-1, -0.5, floor, 1, 0.5, floor + 0.7)]),
+        boxes("lamp", [(-0.1, -0.1, 2.3, 0.1, 0.1, 2.9)]),
+        boxes("tree", [(9.8, -0.2, 0, 10.2, 0.2, 2.5), (8.5, -1.5, 2.5, 11.5, 1.5, 5.5)]),
+    ]
+    bpy.context.view_layer.update()
+
+    cut = bmeasure.indoor_cut((0.5, 0.2, 1.9))
+    assert cut and abs(cut["floorM"] - floor) < 1e-3 and abs(cut["cutM"] - (floor + 1.2)) < 1e-3
+    assert abs(cut["ceilingM"] - 2.9) < 1e-3 and 3.5 < cut["roomReachM"] < 5.5
+    assert bmeasure.indoor_cut((10.0, 6.0, 1.6)) is None  # in the garden
+    assert bmeasure.indoor_cut((11.0, 0.5, 1.6)) is None  # under the tree's crown is not a room
+
+    whole = {o["name"]: o for o in bmeasure.footprints(things)}
+    assert set(whole) == {"shell", "roof", "table", "lamp", "tree"} and "sectionM" not in whole["shell"]
+    plan = {o["name"]: o for o in bmeasure.footprints(things, cut["cutM"])}
+    assert set(plan) == {"shell", "table", "tree"}  # the roof and the lamp are over the cut
+    assert plan["shell"]["sectionM"] and not plan["table"]["sectionM"]
+    xs = [q[0] for line in plan["shell"]["sectionM"] for q in line]
+    ys = [q[1] for line in plan["shell"]["sectionM"] for q in line]
+    assert (min(xs), max(xs), min(ys), max(ys)) == (-4.0, 4.0, -3.0, 3.0)
+    # The tree by its trunk alone (its crown starts over the cut), and the trunk cut.
+    tx = [q[0] for ring in plan["tree"]["ringsM"] for q in ring]
+    assert max(tx) - min(tx) < 0.6 and plan["tree"]["sectionM"]
+    wx = [q[0] for ring in whole["tree"]["ringsM"] for q in ring]
+    assert max(wx) - min(wx) > 2.9
 
 
 @needs_blender

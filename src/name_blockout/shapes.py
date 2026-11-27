@@ -374,9 +374,12 @@ def _vehicle(length, width, h, kind) -> list[Part]:
         glass_x, glass_len = cx, cabin
     elif kind == "truck":
         cab = min(length * 0.3, 2.0)
+        bed = length - cab - 0.05
         parts += [
             _box("運転台", (length / 2 - cab / 2, 0, (clear + h) / 2), (cab, width, h - clear)),
-            _box("荷台", (-cab / 2, 0, (clear + h * 0.95) / 2), (length - cab - 0.1, width, h * 0.95 - clear), "金属"),
+            # The bed runs to the tail (the lamps and the bumper sit on it); a frame under both carries the cab too.
+            _box("荷台", (-length / 2 + bed / 2, 0, (clear + h * 0.95) / 2), (bed, width, h * 0.95 - clear), "金属"),
+            _box("フレーム", (0, 0, clear + 0.09), (length, width * 0.5, 0.18), "黒い塗装"),
             _box("フロントガラス", (length / 2 + 0.01, 0, (belt + h) / 2), (0.03, width * 0.8, (h - belt) * 0.8), "ガラス"),
         ]
         glass_x, glass_len = length / 2 - cab / 2, cab * 0.7
@@ -393,35 +396,61 @@ def _vehicle(length, width, h, kind) -> list[Part]:
     panes = 2 if kind in ("car", "truck") else max(3, int(glass_len / 1.0))
     pane = glass_len / panes
     top = h - (h - belt) * 0.15
+    # A car's cabin is narrower than its body: its windows and mirrors sit on the cabin's sides, not in the air
+    # beside them.
+    upper = width * 0.45 if kind == "car" else width / 2
     for side in (-1, 1):
         for i in range(panes):
             x = glass_x - glass_len / 2 + pane * (i + 0.5)
             parts.append(
-                _box("窓ガラス", (x, side * (width / 2 + 0.005), (belt + 0.05 + top) / 2), (pane * 0.86, 0.02, top - belt - 0.08), "ガラス")
+                _box("窓ガラス", (x, side * (upper + 0.005), (belt + 0.05 + top) / 2), (pane * 0.86, 0.02, top - belt - 0.08), "ガラス")
             )
         # Door seams: thin strips.
         for x in (glass_x - glass_len / 4, glass_x + glass_len / 4):
             parts.append(
                 _box("ドアの継ぎ目", (x, side * (width / 2 + 0.008), (clear + belt) / 2 + 0.05), (0.015, 0.012, belt - clear - 0.1))
             )
-        parts.append(
-            _box("ドアミラー", (length / 2 - length * 0.22, side * (width / 2 + 0.12), belt + 0.12), (0.12, 0.18, 0.14), "黒い塗装")
-        )
-    # Wheels and their hubs, set into the body's sides.
-    for x in (length / 2 - length * 0.18, -length / 2 + length * 0.18):
+        # The mirror on the front door, its inner end on the body (a truck's on its cab).
+        mirror_x = length / 2 - (cab * 0.3 if kind == "truck" else length * 0.22)
+        parts.append(_box("ドアミラー", (mirror_x, side * (upper + 0.085), belt + 0.07), (0.12, 0.18, 0.14), "黒い塗装"))
+    # Wheels and their hubs, set into the body's sides (a truck's front wheels under its cab).
+    front = length / 2 - (cab / 2 if kind == "truck" else length * 0.18)
+    for x in (front, -length / 2 + length * 0.18):
         for side in (-1, 1):
             parts.append(_cyl("タイヤ", (x, side * (width / 2 - 0.1), r), (2 * r, 0.24, 2 * r), "Y", "黒い塗装"))
             parts.append(_cyl("ホイール", (x, side * (width / 2 + 0.025), r), (r, 0.03, r), "Y", "金属"))
             parts.append(_box("フェンダー", (x, side * (width / 2 + 0.01), clear + r * 1.25), (2 * r + 0.2, 0.03, 0.06)))
+    # The front and the tail, at heights within the body's side (a small car's lamps do not rise past its bonnet).
+    side_h = belt - clear
+    lamp = min(0.12, side_h * 0.3)
     parts += [
-        _box("バンパー", (length / 2 + 0.05, 0, clear + 0.12), (0.12, width + 0.04, 0.22), "黒い塗装"),
-        _box("バンパー", (-length / 2 - 0.05, 0, clear + 0.12), (0.12, width + 0.04, 0.22), "黒い塗装"),
-        _box("ナンバー", (length / 2 + 0.12, 0, clear + 0.18), (0.02, 0.4, 0.15), "白壁"),
-        _box("グリル", (length / 2 + 0.01, 0, clear + 0.38), (0.03, width * 0.5, 0.16), "黒い塗装"),
+        _box(
+            "バンパー", (length / 2 + 0.05, 0, clear + min(0.12, side_h * 0.25)), (0.12, width + 0.04, min(0.22, side_h * 0.45)), "黒い塗装"
+        ),
+        _box(
+            "バンパー",
+            (-length / 2 - 0.05, 0, clear + min(0.12, side_h * 0.25)),
+            (0.12, width + 0.04, min(0.22, side_h * 0.45)),
+            "黒い塗装",
+        ),
+        _box(
+            "ナンバー",
+            (length / 2 + 0.12, 0, clear + min(0.18, side_h * 0.3)),
+            (0.02, min(0.4, width * 0.3), min(0.15, side_h * 0.3)),
+            "白壁",
+        ),
+        _box("グリル", (length / 2 + 0.01, 0, clear + side_h * 0.68), (0.03, width * 0.5, min(0.16, side_h * 0.3)), "黒い塗装"),
     ]
     for side in (-1, 1):
-        parts.append(_box("ライト", (length / 2 + 0.02, side * width * 0.36, clear + 0.42), (0.04, width * 0.18, 0.12), "ガラス"))
-        parts.append(_box("テールランプ", (-length / 2 - 0.02, side * width * 0.4, clear + 0.45), (0.04, width * 0.12, 0.2), "ガラス"))
+        parts.append(_box("ライト", (length / 2 + 0.02, side * width * 0.36, clear + side_h * 0.75), (0.04, width * 0.18, lamp), "ガラス"))
+        parts.append(
+            _box(
+                "テールランプ",
+                (-length / 2 - 0.02, side * width * 0.4, clear + side_h * 0.75),
+                (0.04, width * 0.12, min(0.2, side_h * 0.4)),
+                "ガラス",
+            )
+        )
     return parts
 
 
@@ -609,7 +638,7 @@ def pole(w, d, h, rnd) -> list[Part]:
         _cyl("柱", (0, 0, h / 2), (2 * r, 2 * r, h), "Z", "コンクリート"),
         _box("腕金", (0, 0, h * 0.9), (1.8, 0.08, 0.08), "金属"),
         _box("腕金", (0, 0, h * 0.82), (1.4, 0.08, 0.08), "金属"),
-        _cyl("変圧器", (0.35, 0, h * 0.7), (0.4, 0.4, 0.7), "Z", "金属"),
+        _cyl("変圧器", (r + 0.19, 0, h * 0.7), (0.4, 0.4, 0.7), "Z", "金属"),
         _box("足場ボルト", (0, -r, h * 0.5), (0.02, 0.2, 0.02), "金属"),
     ]
 
@@ -664,8 +693,8 @@ def _leaves(c, s, rnd) -> Part:
 def door(w, d, h, rnd) -> list[Part]:
     return [
         _box("ドア枠", (0, 0, h / 2), (w, d, h), "木"),
-        _box("ドア", (0, -d / 2 - 0.01, (h - 0.06) / 2), (w - 0.12, 0.03, h - 0.06), "木"),
-        _box("ドアノブ", (w / 2 - 0.15, -d / 2 - 0.05, h * 0.45), (0.1, 0.05, 0.04), "金属"),
+        _box("ドア", (0, -d / 2 - 0.01, (h - 0.06) / 2), (max(w - 0.12, w * 0.8), 0.03, h - 0.06), "木"),
+        _box("ドアノブ", (w / 2 - min(0.15, w * 0.2), -d / 2 - 0.05, h * 0.45), (min(0.1, w * 0.12), 0.05, 0.04), "金属"),
     ]
 
 
@@ -684,8 +713,11 @@ def bench(w, d, h, rnd) -> list[Part]:
     parts = []
     for i in range(3):
         parts.append(_box("座板", (0, -d / 2 + d * (i + 0.5) / 3, seat), (w, d / 3 - 0.02, 0.035), "木"))
+    back = h - seat
+    slat = min(0.12, back * 0.3)
     for i in range(2):
-        parts.append(_box("背板", (0, d / 2 - 0.03, seat + 0.15 + i * 0.18), (w, 0.03, 0.12), "木"))
+        # Two slats within the back's height (a low bench's back is low: the slats do not rise past their posts).
+        parts.append(_box("背板", (0, d / 2 - 0.03, seat + back * (0.4 + 0.42 * i)), (w, 0.03, slat), "木"))
     for x in (-w / 2 + 0.1, w / 2 - 0.1):
         parts.append(_box("脚", (x, 0, seat / 2), (0.05, d, seat), "金属"))
         parts.append(_box("背の支え", (x, d / 2 - 0.05, seat + (h - seat) / 2), (0.05, 0.04, h - seat), "金属"))

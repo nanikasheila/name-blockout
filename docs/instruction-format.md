@@ -36,7 +36,7 @@ name-studio などのネームの道具と name-blockout の間の約束です�
 | `ruler` | 透視の定規: `points`（0〜3）・アイレベル `horizonMm`（コマの左右の辺の上の 2 点）・消失点 `vanishingMm`（1・2 はアイレベルの上、3 は縦の線が集まる点）・XYZ の線 `guidesMm` | 設計 |
 | `camera` | 定規からは決まらないこと: 高さ `heightM`・場所の中の位置 `positionM`・立ち位置の名前 `spot`・レンズ `lensMm`（消失点が 2 つ以上なら定規から決まる）と、書いた道具の計算 `hint` | 設計（`hint` は照合だけ） |
 | `place` | 場所: 素材の名前 `asset`、消失点 1・2 が場所の座標のどの向きか `axes`（例 `["+X", "+Y"]`）、中の物を動かす `moves`（`[{"object": "VAN", "positionM": [8.4, -18.7, 0], "turnDeg": 90}]`）、描かない物 `hide`（名前か名前の頭） | 設計 |
-| `objects` | 物: id・名前・範囲 `shapeMm`・素材 `asset`・大きさ `sizeM` [幅, 奥行, 高さ]・どの消失点へ向かうか `axis`（1/2）・向きの言葉 `facing`・見せたい面 `show`・地面に置くか `onGround`・距離帯 `band`（near/middle/far） | 設計 |
+| `objects` | 物: id・名前・範囲 `shapeMm`・素材 `asset`・大きさ `sizeM` [幅, 奥行, 高さ]・俯瞰図で決めた置き場所 `positionM` [x, y]（あれば範囲から解かずにそこへ置く）・どの消失点へ向かうか `axis`（1/2）・向きの言葉 `facing`・見せたい面 `show`・地面に置くか `onGround`・距離帯 `band`（near/middle/far） | 設計 |
 | `figures` | 人物（あたりの人形）: 頭から足までの範囲 `shapeMm`・身長 `heightM`・姿勢 `pose`・向き・足が切れているか `cut` | 設計 |
 | `far` | 遠景の層（奥から）: 全天球の画像 `panorama`（素材の名前 `asset`・回す角度 `turnDeg`）、道具が作る街並み `skyline`・山並み `mountains`・木立 `trees`（距離 `distanceM`・高さの幅 `heightM`・種 `seed`） | 設計 |
 | `room` | 屋内の部屋: 天井の高さ `heightM`・窓 `windows`（壁 `wall` back/left/right/front・幅・高さ・床からの高さ `sillM`・ずれ `offsetM`）。屋内なら道具が作る。`false` で作らない | 設計 |

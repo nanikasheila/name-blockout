@@ -17,6 +17,7 @@ from .plan import build_develop_plan, build_plan, folder_of, instruction_dir
 from .requirement import current, effective, read_requirement
 from .scope import redo_scope
 from .takes import TAKES_DIR, WORK_DIR, add_take, next_take
+from .top import write_top
 from .verify import summary_words, verify
 
 
@@ -147,6 +148,10 @@ def run_blockout(
         measured = bmeasure.measure(plan, built)
         result = verify(plan, measured)
         write_json(work / "plan.json", plan)
+        # The same layout from straight above (俯瞰図/<コマ>.svg, and beside the take's files), a place's contents in it.
+        cut = bmeasure.indoor_cut(plan["camera"]["positionM"]) if built.get("place") else None
+        outlines = bmeasure.footprints(built["place"], cut["cutM"] if cut else None) if built.get("place") else None
+        write_top(folder, plan, outlines, also=work, cut=cut)
         write_json(work / "measured.json", measured)
         write_json(work / "check.json", result)
         files = {}

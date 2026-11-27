@@ -2,6 +2,7 @@
 
 ネーム（漫画の絵コンテ）の指示から、Blender で背景の **Blockout（あたり）** を数秒で組み、狙いどおりかを**数値で確かめる**道具です。[name-studio](https://github.com/nanikasheila/name-studio) の「作画」の欄と組んで使います。
 
+- 3D を組む前に、配置を真上から見た **俯瞰図**（寸法つきの SVG）で確かめます。描いた絵は、作った側ではない講評役に、参考の絵・測った数字と並べて渡します（問題は最大 5 つ、直しは数字で、3 回まで）。
 - **要求開発** → **設計（Blockout）** → **開発（本番の作画）** の 3 フェイズ。ネームの案出しは設計まで、作画に移ると決めたコマだけ開発へ（[docs/phases.md](docs/phases.md)）。
 - コマに引いた透視の定規（アイレベル・消失点）から、カメラ（レンズ・シフト・見上げ/見下ろし・傾き）を計算で決めます。AI にカメラを合わせさせません。
 - 組んだシーンを Blender 自身の投影で測り、指示とのずれ（px・度・重なり）を出します。合った絵だけが案として name-studio に届きます。
@@ -23,9 +24,13 @@ pip install -e ".[schema]"
 name-blockout check    依頼/20261126-0100/指示.json   # 要求の点検と次の質問
 name-blockout answer   依頼/20261126-0100/指示.json --shot panel12 --set camera.heightM=1.2
 name-blockout confirm  依頼/20261126-0100/指示.json --shot panel12
+name-blockout top      依頼/20261126-0100/指示.json   # 俯瞰図: 配置を真上から、寸法つきで（Blender なし）
+name-blockout parts    依頼/20261126-0100/指示.json   # 部品: 作る形の寸法表と三面図、浮いている部品がないか（Blender なし）
 name-blockout blockout 依頼/20261126-0100/指示.json   # 組んで照合して描き出す
 name-blockout scope    依頼/20261126-0100/指示.json --shot panel12   # 直したらどこからやり直すか
 name-blockout develop  依頼/20261126-0100/指示.json   # 開発: 同じ配置に光（時間帯・天気）と材質、影・トーン・ベタ
+name-blockout critique 依頼/20261126-0100/指示.json --shot panel12 --reference 参考.png   # 講評役に渡す一式を作る
+name-blockout critique 依頼/20261126-0100/指示.json --shot panel12 --answer 講評.json     # 講評役の答えを記録する
 name-blockout materials                               # 材質のライブラリ（3D と漫画での描き方の組）
 ```
 
@@ -37,6 +42,10 @@ name-blockout materials                               # 材質のライブラリ
   依頼/<id>/背景.json          ← 1 案 1 件（照合の結果はメモに）
   blockout/<コマ>/<番号>/      ← plan.json・measured.json・check.json・scene.blend
   要求/<コマ>.json             ← 要求開発の答えと版
+  俯瞰図/<コマ>.svg・.json     ← 配置を真上から（カメラ・画角・物の寸法・部屋・場所の中身。屋内は壁の間取り）
+  部品/<コマ>/<物>.svg・.json  ← 作る形の三面図と寸法表、浮いている部品の点検
+  講評/<コマ>/<回>/            ← 並べた絵.png・数字.json・依頼.md・講評.json
+  基準.md                      ← この作品だけの作者の基準（1 行に 1 つ。講評役が読む）
 ```
 
 ## 開発
