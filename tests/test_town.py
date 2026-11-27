@@ -10,12 +10,26 @@ import pytest
 
 from name_blockout.camera import fit_camera
 from name_blockout.checks import check_shot
+from name_blockout.far import NEAR_M
 from name_blockout.instruction import read_instruction, schema_problems
 from name_blockout.materials import natural_parts
 from name_blockout.plan import build_plan
 from name_blockout.requirement import effective
 from name_blockout.top import build_top, to_svg, top_words
-from name_blockout.town import BLOCK_DEEP_M, LOT_MAX_M, REACH_M, STREET_M, beyond, place_reach, rect, seen_reach, town, town_words
+from name_blockout.town import (
+    BLOCK_DEEP_M,
+    LOT_MAX_M,
+    REACH_M,
+    STREET_M,
+    beyond,
+    off_outline,
+    outline,
+    place_reach,
+    rect,
+    seen_reach,
+    town,
+    town_words,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 EXAMPLE = ROOT / "examples" / "develop" / "指示.json"
@@ -47,7 +61,10 @@ def test_the_same_seed_is_the_same_town_and_another_seed_another():
     a, b, c = town(camera, {"seed": 4}), town(camera, {"seed": 4}), town(camera, {"seed": 5})
     assert a == b and json.dumps(a, ensure_ascii=False)
     assert [h["centreM"] for h in a["houses"]] != [h["centreM"] for h in c["houses"]]
-    assert len(a["houses"]) > 10 and a["poles"] and a["trees"]
+    assert len(a["houses"]) > 5 and a["poles"] and a["trees"]
+    # None in the near band: what stands near is the author's to draw.
+    at = camera.position[:2]
+    assert min(math.hypot(x - at[0], y - at[1]) for h in a["houses"] for x, y in rect(h)) > NEAR_M
     # Nearest first, all within reach and within what the picture looks toward.
     assert [h["distanceM"] for h in a["houses"]] == sorted(h["distanceM"] for h in a["houses"])
     assert a["houses"][-1]["distanceM"] <= a["reachM"]
@@ -138,6 +155,18 @@ def test_only_what_is_beyond_the_place_is_kept():
             a = int(math.floor(math.degrees(math.atan2(y - origin[1], x - origin[0])))) % 360
             if a in far:
                 assert math.hypot(x - origin[0], y - origin[1]) > far[a] + STREET_M
+    # Nor among the place's things: a yard behind a long wall is the place's, though it lies beyond the wall.
+    wall = [(x, -14.0) for x in range(-60, 61, 5)]
+    yard = beyond(made, place + wall, origin)
+    hull = outline(place + wall)
+    assert (-60.0, -14.0) in hull and (60.0, -14.0) in hull and (0.0, 4.0) not in hull
+    assert off_outline(hull, 30.0, -5.0) < 0 < off_outline(hull, 30.0, 30.0)
+    assert yard["houses"] and len(yard["houses"]) < len(kept["houses"])
+    for item in (
+        [q for h in yard["houses"] for q in rect(h)] + [t["centreM"] for t in yard["trees"]] + [p["centreM"] for p in yard["poles"]]
+    ):
+        assert off_outline(hull, item[0], item[1]) > STREET_M
+    assert off_outline([(0.0, 0.0), (10.0, 0.0)], 5.0, 3.0) == 3.0 and off_outline([], 1.0, 1.0) == math.inf
     # Nothing on the place's own ground either, however far it goes.
     lot = (-30.0, -30.0, 30.0, 30.0)
     off = beyond(made, place, origin, grounds=[lot])
