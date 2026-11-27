@@ -576,16 +576,60 @@ def mark_sharp(obj) -> None:
     attr.data.foreach_set("value", sharp)
 
 
+#: A ground's faces of two materials lie against each other when they are within this (m): modelled as separate
+#: pieces (a path laid on a lawn, a kerb set against paving), they share no edge.
+BORDER_NEAR_M = 0.05
+
+
 def mark_material_borders(obj) -> int:
     """On a ground (a lot, a terrace), the edges where two materials meet (a lawn against a path, paving against a
     kerb) marked to be drawn: the ground is left white whatever it is made of, so without a line the two would
-    run into one. Returns how many edges were marked."""
+    run into one. An edge between two faces of different materials; or, where the materials are separate pieces,
+    the open edge of one piece lying against a face of another material (the lot's own outer edge, with nothing
+    beside it, is not one). Returns how many edges were marked."""
+    from mathutils.bvhtree import BVHTree
+
     mesh = obj.data
     if len(mesh.materials) < 2:
         return 0
     bm = bmesh.new()
     bm.from_mesh(mesh)
+    bm.transform(obj.matrix_world)
+    bm.faces.ensure_lookup_table()
     border = [len({f.material_index for f in e.link_faces}) > 1 for e in bm.edges]
+    taken: dict[tuple[float, float], list[float]] = {}
+
+    def take(a, b) -> bool:
+        """Whether no border is here yet (its middle, within BORDER_NEAR_M in height); if so, now there is."""
+        mid = (a + b) / 2
+        heights = taken.setdefault((round(mid.x, 2), round(mid.y, 2)), [])
+        if any(abs(mid.z - z) <= BORDER_NEAR_M for z in heights):
+            return False
+        heights.append(mid.z)
+        return True
+
+    for e, shared in zip(bm.edges, border):
+        if shared:
+            take(e.verts[0].co, e.verts[1].co)
+    others = {}
+    for e in bm.edges:
+        if len(e.link_faces) != 1:
+            continue
+        own = e.link_faces[0].material_index
+        if own not in others:
+            rest = [f for f in bm.faces if f.material_index != own]
+            points = [v.co.copy() for v in bm.verts]
+            others[own] = BVHTree.FromPolygons(points, [[v.index for v in f.verts] for f in rest]) if rest else None
+        tree = others[own]
+        if tree is None:
+            continue
+        a, b = e.verts[0].co, e.verts[1].co
+        # Along its length, not at its ends alone: a corner touching another piece is not an edge lying against it.
+        if not all(tree.find_nearest(a.lerp(b, t), BORDER_NEAR_M)[0] is not None for t in (0.25, 0.5, 0.75)):
+            continue
+        # Two pieces' open edges on the same line (the lawn's and the path's) are one border.
+        if take(a, b):
+            border[e.index] = True
     bm.free()
     if not any(border):
         return 0

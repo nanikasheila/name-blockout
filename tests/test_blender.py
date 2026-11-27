@@ -600,6 +600,29 @@ def test_where_two_materials_meet_on_a_ground_the_edge_is_marked():
     assert mark_material_borders(obj) == 1
     marked = [tuple(sorted(e.vertices)) for e, m in zip(mesh.edges, mesh.attributes["freestyle_edge"].data) if m.value]
     assert marked == [(2, 6)]
+    # Two pieces that share no edge (a path laid beside a lawn, 1 cm higher): the edge where they lie against each
+    # other is marked once; the lot's own outer edges are not.
+    apart = bpy.data.meshes.new("apart")
+    verts = [(0, 0, 0), (2, 0, 0), (2, 1, 0), (0, 1, 0), (2, 0, 0.01), (3, 0, 0.01), (3, 1, 0.01), (2, 1, 0.01)]
+    apart.from_pydata(verts, [], [(0, 1, 2, 3), (4, 5, 6, 7)])
+    for name in ("grass", "pave"):
+        apart.materials.append(bpy.data.materials[name])
+    apart.polygons[1].material_index = 1
+    obj = bpy.data.objects.new("apart", apart)
+    assert mark_material_borders(obj) == 1
+    marked = [tuple(sorted(e.vertices)) for e, m in zip(apart.edges, apart.attributes["freestyle_edge"].data) if m.value]
+    assert marked in ([(1, 2)], [(4, 7)])
+    # A kerb standing on the paving (its foot's open edges lie on the paving's face): its foot is marked.
+    kerb = bpy.data.meshes.new("kerb")
+    verts = [(0, 0, 0), (4, 0, 0), (4, 4, 0), (0, 4, 0)]
+    verts += [(1, 1, 0), (3, 1, 0), (3, 1.2, 0), (1, 1.2, 0), (1, 1, 0.15), (3, 1, 0.15), (3, 1.2, 0.15), (1, 1.2, 0.15)]
+    sides = [(4, 5, 9, 8), (5, 6, 10, 9), (6, 7, 11, 10), (7, 4, 8, 11), (8, 9, 10, 11)]
+    kerb.from_pydata(verts, [], [(0, 1, 2, 3), *sides])
+    for name in ("pave", "grass"):
+        kerb.materials.append(bpy.data.materials[name])
+    for poly in list(kerb.polygons)[1:]:
+        poly.material_index = 1
+    assert mark_material_borders(bpy.data.objects.new("kerb", kerb)) == 4
     # One material: nothing to tell apart.
     plain = bpy.data.meshes.new("plain")
     plain.from_pydata(verts, [], [(0, 1, 5, 4), (1, 2, 6, 5)])
