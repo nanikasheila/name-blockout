@@ -36,7 +36,11 @@ import bpy
 import numpy as np
 from mathutils import Vector
 
-from ..lines import boundary_lines, tone_floor
+from ..groundmarks import KIND_CODES
+from ..groundmarks import counts as mark_counts
+from ..groundmarks import draw as draw_marks
+from ..groundmarks import spots as mark_spots
+from ..lines import W_MIN_MM, boundary_lines, tone_floor
 from ..materials import DEFAULT, LIBRARY, seen
 from .picture import load as _load
 from .picture import save as _save
@@ -431,6 +435,8 @@ def develop_passes(plan: dict, built: dict, out_dir: Path, samples: int = 16) ->
     # The tops in the light (not a crown's lumps), for the tones below.
     tops = (seen & ~backdrop & ~standing & (depths[..., 1] < 0.5))[::by, ::by][:h, :w].copy()
     del depths, normals, seen, backdrop, lot, standing
+    # The marks that say what a white ground is made of (a lawn's blades, soil's dots), as far as texture goes.
+    marks, mark_info = ground_marks(plan, built, out_dir, distance, line_info["foregroundM"])
 
     # 線画: the texture lines (marked edges, the ground's grid) by Freestyle, fading with distance, without the
     # light's ground; 遠景: the far band alone, its tones.
@@ -539,12 +545,14 @@ def develop_passes(plan: dict, built: dict, out_dir: Path, samples: int = 16) ->
     if "線画" in files:
         lines[..., 3] *= texture_reach(distance, line_info["foregroundM"])
         black = np.zeros((h, w, 4), dtype=np.float32)
-        black[..., 3] = ink[:h, :w]
+        black[..., 3] = ink[:h, :w] if marks is None else np.maximum(ink[:h, :w], marks)
         lines = _over(black, lines)
         _save(files["線画"], lines)
     files["完成"] = _save(out_dir / "完成.png", _over(white_on_beta(lines, tone, reach), _over(tone, white)))
     check = shadow_check(plan, built, shadow, lit, sun)
     check["lines"] = line_info
+    if mark_info:
+        check["groundMarks"] = mark_info
     if not os.environ.get(KEEP_ENV):
         for name in ("_lit.png", "_shadow.png", "_depth.exr", "_normal.exr", "_cells.exr"):
             (out_dir / name).unlink(missing_ok=True)
@@ -664,6 +672,69 @@ def _depths():
     links.new(rgb.outputs[0], emit.inputs["Color"])
     links.new(emit.outputs[0], out.inputs[0])
     return mat
+
+
+#: The ground-spot pass shows where a surface lies from the camera, within this (m), as 0–1.
+SPOT_RANGE_M = 4096.0
+
+
+def _ground_spots(camera_at):
+    """A material showing where each surface lies on the place (x and y from the camera, as ½ + ½ · offset /
+    SPOT_RANGE_M) and what ground its face is (the face attribute nb_ground_kind; 0: none); to be read back
+    exactly."""
+    mat = bpy.data.materials.get(PREFIX + "ground_spots") or bpy.data.materials.new(PREFIX + "ground_spots")
+    mat.use_nodes = True
+    nodes, links = mat.node_tree.nodes, mat.node_tree.links
+    nodes.clear()
+    out = nodes.new("ShaderNodeOutputMaterial")
+    geo = nodes.new("ShaderNodeNewGeometry")
+    moved = nodes.new("ShaderNodeVectorMath")
+    moved.operation = "SUBTRACT"
+    moved.inputs[1].default_value = tuple(camera_at)
+    links.new(geo.outputs["Position"], moved.inputs[0])
+    half = nodes.new("ShaderNodeVectorMath")
+    half.operation = "MULTIPLY_ADD"
+    half.inputs[1].default_value = (0.5 / SPOT_RANGE_M,) * 3
+    half.inputs[2].default_value = (0.5, 0.5, 0.5)
+    links.new(moved.outputs["Vector"], half.inputs[0])
+    split = nodes.new("ShaderNodeSeparateXYZ")
+    links.new(half.outputs["Vector"], split.inputs[0])
+    kind = nodes.new("ShaderNodeAttribute")
+    kind.attribute_type = "GEOMETRY"
+    kind.attribute_name = "nb_ground_kind"
+    rgb = nodes.new("ShaderNodeCombineXYZ")
+    links.new(split.outputs["X"], rgb.inputs[0])
+    links.new(split.outputs["Y"], rgb.inputs[1])
+    links.new(kind.outputs["Fac"], rgb.inputs[2])
+    emit = nodes.new("ShaderNodeEmission")
+    links.new(rgb.outputs[0], emit.inputs["Color"])
+    links.new(emit.outputs[0], out.inputs[0])
+    return mat
+
+
+def ground_marks(plan: dict, built: dict, out_dir: Path, distance: np.ndarray, foreground: float) -> tuple[np.ndarray | None, dict]:
+    """The marks on the place's lawns and soil (groundmarks.py) as ink, and their numbers; None where the place has
+    no such ground. Not on a street of the town (it is laid over the land, which may be a lawn)."""
+    if not any(o.get("nb_ground_kinds") and set(o["nb_ground_kinds"]) & set(KIND_CODES) for o in built.get("place") or []):
+        return None, {}
+    scene = bpy.context.scene
+    at = scene.camera.matrix_world.translation
+    bpy.context.view_layer.material_override = _ground_spots(at)
+    spot = _render(out_dir / "_spots.exr", 1, exact=True)
+    bpy.context.view_layer.material_override = None
+    x = (spot[..., 0].astype(np.float64) - 0.5) * 2.0 * SPOT_RANGE_M + at.x
+    y = (spot[..., 1].astype(np.float64) - 0.5) * 2.0 * SPOT_RANGE_M + at.y
+    kind = np.where(spot[..., 3] > 0.5, spot[..., 2], 0.0)
+    skip = np.zeros(kind.shape, dtype=bool)
+    for street in (plan.get("surroundings") or {}).get("streets") or []:
+        along, across = (x, y) if street["axis"] == "X" else (y, x)
+        skip |= (np.abs(across - street["atM"]) <= street["widthM"] / 2) & (along >= street["fromM"]) & (along <= street["toM"])
+    px_per_mm = plan["render"]["dpi"] / 25.4
+    marks = mark_spots(kind, x, y, distance, px_per_mm, TEXTURE_REACH * foreground, skip)
+    if not os.environ.get(KEEP_ENV):
+        (out_dir / "_spots.exr").unlink(missing_ok=True)
+    on = (kind > 0.05) & ~skip
+    return draw_marks(marks, on, px_per_mm, W_MIN_MM), mark_counts(marks)
 
 
 def _normals():

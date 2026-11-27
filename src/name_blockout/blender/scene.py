@@ -17,6 +17,7 @@ import bpy
 from mathutils import Matrix, Vector
 
 from ..far import BANDS, TONE_LIFT
+from ..groundmarks import KIND_CODES
 from ..lines import W_MIN_MM
 from ..materials import CELL_WORDS, DEFAULT, FINE_WORDS, FOLIAGE, NATURAL_WORDS, guess_part, natural_parts
 from ..town import FOOTING_M as TOWN_FOOTING_M
@@ -1228,6 +1229,16 @@ FLAT = "白地"
 KEEP_ON_FLAT = ("黒い塗装", "ガラス", "水")
 
 
+def mark_ground_kinds(obj, guessed: list[str]) -> None:
+    """Each face of a ground numbered by what it is made of (the face attribute nb_ground_kind: KIND_CODES' values
+    for a lawn and bare soil, 0 for the rest), for the marks drawn on it."""
+    mesh = obj.data
+    codes = [KIND_CODES.get(g, 0.0) for g in guessed] or [0.0]
+    attr = mesh.attributes.get("nb_ground_kind") or mesh.attributes.new("nb_ground_kind", "FLOAT", "FACE")
+    attr.data.foreach_set("value", [codes[min(p.material_index, len(codes) - 1)] for p in mesh.polygons])
+    obj["nb_ground_kinds"] = list(guessed)
+
+
 def _flat_and_large(obj, lowest: float) -> bool:
     mw = obj.matrix_world
     points = [mw @ Vector(c) for c in obj.bound_box]
@@ -1303,6 +1314,8 @@ def add_place(place: dict):
         # A large flat surface (a lot's ground, a lawn, a terrace, a flat roof) stays white as a manga leaves it, its
         # shadows toned: a whole ground in grey weighs the picture down.
         if _flat_and_large(o, lowest):
+            # …and what it is made of is said by a few marks on it (groundmarks.py): each face's kind is kept.
+            mark_ground_kinds(o, guessed)
             guessed = [g if g in KEEP_ON_FLAT else FLAT for g in guessed]
             o["nb_ground"] = True
             mark_material_borders(o)

@@ -784,6 +784,23 @@ def test_develop_from_above_roof_white_windows_dark_lines_black(tmp_path):
     faint, full = ((alpha > 0.05) & (alpha < 0.5)).sum(), (alpha >= 0.5).sum()
     assert full > 500 and faint < full, (faint, full)
     assert lines[alpha > 0.05][:, :3].max() < 0.05  # and none is grey
+    # What the white lot is made of is said by a few marks: tufts on the lawn (sparse, the finest pen), none on
+    # the paving; each face of the lot keeps its kind for them.
+    assert list(lot["nb_ground_kinds"])[0] == "草"
+    assert [round(v.value, 2) for v in lot.data.attributes["nb_ground_kind"].data] == [0.25, 0.0]
+    check = json.loads((tmp_path / "blockout" / "panel1" / r["take"] / "check.json").read_text(encoding="utf-8"))
+    said = next(c["groundMarks"] for c in check["checks"] if "groundMarks" in c)
+    assert set(said) == {"草"} and 5 < said["草"]["marks"] < 200, said
+
+    def inked(point) -> bool:
+        if camera.project(point) is None:  # behind the camera
+            return False
+        y, x = at(point)
+        return 0 <= y < alpha.shape[0] and 0 <= x < alpha.shape[1] and alpha[max(0, y - 30) : y + 31, max(0, x - 30) : x + 31].max() > 0.9
+
+    lawn = [(float(x), float(y), 0.0) for x in range(-26, -2, 2) for y in range(-26, -3, 2)]
+    paving = [(float(x), float(y), 0.0) for x in range(4, 27, 2) for y in range(-26, -7, 2)]
+    assert sum(inked(p) for p in lawn) > 5 and not any(inked(p) for p in paving)
 
 
 @needs_blender
