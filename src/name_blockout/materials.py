@@ -54,7 +54,7 @@ LIBRARY = {
         Material("アスファルト", 0.25, 0.95, 0.1, 0.4, note="白線は白抜き。一面を濃く塗らない"),
         Material("白地", 0.9, 1.0, 0.0, 0.25, note="地面・床は白地のまま、影だけ薄いトーン。目地や舗装の継ぎ目は線で"),
         Material("土", 0.4, 1.0, 0.2, 0.45),
-        Material("草", 0.35, 1.0, 0.2, 0.5, lines="detail", note="草むらは線の束で、影はトーン"),
+        Material("草", 0.35, 1.0, 0.2, 0.4, lines="detail", note="草むらは線の束で、影はトーン"),
         Material("布", 0.6, 1.0, 0.1, 0.4, note="しわは線で"),
         Material("黒い塗装", 0.08, 0.3, 1.0, 1.0, beta=True, note="ベタ。映り込みはホワイトで"),
         Material("水", 0.3, 0.02, 0.2, 0.5, note="映り込みと波の線"),
@@ -62,12 +62,13 @@ LIBRARY = {
 }
 DEFAULT = "白壁"
 
-#: Glass is as dark as what shows through it. By day from outside, the room behind it is dark: a dark tone in the
-#: light, all but black in the shade (under the eaves), so a house's windows read as its dark shapes against the
-#: white walls and roofs. By day from inside, the daylight outside is the brightest thing in the room: almost
+#: Glass is as dark as what shows through it. By day from outside, the room behind it is dark: a dark tone, a
+#: little darker in the shade (under the eaves), so a house's windows read as its dark shapes against the white
+#: walls and roofs, and their black bars still stand out on them (a solid black would swallow the bars). By day
+#: from inside, the daylight outside is the brightest thing in the room: almost
 #: white. (At dawn, dusk and night the library's own tones stay: who lights which window is the author's to say.)
 GLASS = "ガラス"
-GLASS_BY_DAY = {"outdoor": (0.7, 0.9), "indoor": (0.05, 0.2)}
+GLASS_BY_DAY = {"outdoor": (0.5, 0.6), "indoor": (0.05, 0.2)}
 NO_DAYLIGHT = ("dawn", "dusk", "night")
 
 

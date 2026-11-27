@@ -5,7 +5,11 @@ import numpy as np
 
 from name_blockout.lines import (
     FADE_FROM,
+    FADE_POWER,
+    FOLD_DEPTH,
     MID_TONE,
+    OUTLINE_REACH,
+    TONE_FROM,
     W_DROP_MM,
     W_MAX_MM,
     W_MIN_MM,
@@ -38,11 +42,13 @@ def test_a_deeper_boundary_gets_a_thicker_line():
     depth, *_ = boundary_depths(z, thing, None, None, d_ref=4.0, deepest=4.0)
     near, mid = depth[20, 10], depth[20, 70]
     assert near > mid > 0  # 4 m before 20 m is deeper than 12 m before 20 m
-    # …and the farther box (3 foregrounds off) counts less again by its distance.
-    assert abs(near - (1 / 4 - 1 / 20) * 4) < 1e-3 and abs(mid - (1 / 12 - 1 / 20) * 4 * (FADE_FROM * 4 / 12)) < 1e-3
+    # …and the farther box (3 foregrounds off) counts less again by its distance, squared; but as a thing's outline
+    # it is never less than a fold there.
+    faded = (1 / 12 - 1 / 20) * 4 * (FADE_FROM * 4 / 12) ** FADE_POWER
+    assert faded < FOLD_DEPTH and abs(near - (1 / 4 - 1 / 20) * 4) < 1e-3 and abs(mid - FOLD_DEPTH) < 1e-4
     assert depth[20, 9] == 0 and depth[20, 25] == 0  # the far side of the boundary, and inside the box
     w = widths(depth, 600 / 25.4)
-    # Half as deep again… the square root: over a quarter the depth gives under half the width.
+    # The near box's outline is several times as thick as the farther one's (the pen's finest).
     assert w[20, 10] > 1.8 * w[20, 70] > 0
 
 
@@ -82,16 +88,33 @@ def test_beyond_the_foreground_a_boundary_counts_less_and_tones_take_over():
         z[10:30, 10 + 40 * i : 30 + 40 * i] = metres
     depth, *_ = boundary_depths(z, thing, None, None, d_ref=5.0, deepest=5.0)
     got = [float(depth[20, 10 + 40 * i]) for i in range(5)]
-    # 1/distance alone up to FADE_FROM foregrounds, then again by the distance.
-    assert got[0] == 1.0 and abs(got[1] - 0.5) < 1e-3 and abs(got[2] - 0.25 * FADE_FROM * 5 / 20) < 1e-3
-    assert abs(got[4] - (5 / 80) * (FADE_FROM * 5 / 80)) < 1e-4
+    # 1/distance, and beyond the foreground again by the distance squared: twice as far, an eighth as deep.
+    assert got[0] == 1.0 and abs(got[1] - 0.5 * 0.5**FADE_POWER) < 1e-3
+    # Farther still it is its outline that counts: the finest line up to OUTLINE_REACH foregrounds, then less.
+    assert abs(got[2] - FOLD_DEPTH) < 1e-4 and abs(got[4] - FOLD_DEPTH * OUTLINE_REACH * 5 / 80) < 1e-5
     mm = widths(depth, 1.0)
-    # 40 m: its depth asks for a line under the pen's finest, and it gets the finest (black, never a paler hair).
-    assert mm[20, 10] == W_MAX_MM and W_DROP_MM <= W_MAX_MM * got[3] ** 0.5 < W_MIN_MM and mm[20, 130] == W_MIN_MM
-    assert mm[20, 170] == 0  # 80 m: no line
+    # 10 m: a thinner line; 20 m and 40 m: the finest (black, never a paler hair); 80 m: none.
+    assert mm[20, 10] == W_MAX_MM and W_MIN_MM < mm[20, 50] < 0.5 * W_MAX_MM
+    assert mm[20, 90] == mm[20, 130] == W_MIN_MM and W_MAX_MM * got[4] ** 0.5 < W_DROP_MM and mm[20, 170] == 0
     # …and there the tone takes over: the far post is toned, the near one left as it is; the ground never.
     floor = tone_floor(z, thing, 5.0)
-    assert floor[20, 20] == 0 and abs(floor[20, 180] - MID_TONE * (1 - FADE_FROM * 5 / 80)) < 1e-4 and floor[5, 180] == 0
+    assert floor[20, 20] == 0 and abs(floor[20, 180] - MID_TONE * (1 - TONE_FROM * 5 / 80)) < 1e-4 and floor[5, 180] == 0
+
+
+def test_a_small_thing_s_outline_is_closed_however_shallow():
+    """A stone on the ground seen from above: the ground behind its top is hardly farther than the stone, yet it is
+    a thing before another surface, and its outline is drawn (the finest line) all the way round."""
+    h, w = 60, 60
+    z = np.full((h, w), 40.0, dtype=np.float32)
+    thing = np.ones((h, w), dtype=bool)
+    z[20:40, 20:40] = 39.0  # 2.5 % nearer than the ground behind it
+    depth, *_ = boundary_depths(z, thing, None, None, d_ref=35.0, deepest=100.0)
+    rim = [depth[20, 30], depth[39, 30], depth[30, 20], depth[30, 39]]
+    assert all(abs(d - FOLD_DEPTH) < 1e-4 for d in rim)
+    assert all(v == W_MIN_MM for v in (widths(depth, 1.0)[20, 30], widths(depth, 1.0)[30, 39]))
+    # A surface turning away a little (under 1 % of its distance from pixel to pixel) is no outline.
+    z[20:40, 20:40] = 39.8
+    assert boundary_depths(z, thing, None, None, d_ref=35.0, deepest=100.0)[0].max() < FOLD_DEPTH / 2
 
 
 def test_the_far_band_s_layers_get_no_lines_and_are_not_the_foreground():
@@ -173,7 +196,7 @@ def test_a_room_s_deepest_boundary_is_as_thick_as_a_lot_s():
     depth, _, deepest = boundary_depths(z * 10, thing)
     assert depth[10, 40] > 0.9
     depth, _, deepest = boundary_depths(z * 1000, thing)
-    assert deepest == 250.0 and depth[10, 40] < 0.01
+    assert deepest == 250.0 and depth[10, 40] < 0.03 and widths(depth, 1.0)[10, 40] == 0  # too shallow for a line
 
 
 def test_a_far_horizon_is_no_line_but_a_thing_s_top_against_the_sky_is():

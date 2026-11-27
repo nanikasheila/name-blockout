@@ -413,7 +413,7 @@ def build_develop_plan(data: dict, shot: dict, instruction_path: str | Path | No
     """The development plan: the same camera and layout as the Blockout (the design does not move), with the light
     (look.py) and each thing's material (materials.py) in numbers, drawn at `dpi` (default 300) from the frame's
     box on the paper: an instruction written out coarser (a name at 150 dpi) is still developed at 300, since a
-    0.1 mm line is under a pixel at 150 and comes out as grey dots."""
+    0.15 mm line is under a pixel at 150 and comes out as grey dots."""
     frame = frame_of(shot["frame"])
     setting, setting_assumed = setting_of(shot)
     # Outdoors the finished picture has a distance: far layers the author did not ask for are made (and noted).

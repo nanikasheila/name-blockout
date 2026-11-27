@@ -751,7 +751,7 @@ def test_develop_from_above_roof_white_windows_dark_lines_black(tmp_path):
     tone = load(tmp_path / "案" / "panel1" / r["take"] / "トーン.png")
     roof, glass = at((2.0, 4.0, 3.3)), at((0.0, -0.05, 1.5))
     assert tone[roof][3] > 0.99 and tone[roof][:3].min() > 0.99, tone[roof]  # コンクリート 0.1 − the top's 0.15: white
-    assert tone[glass][:3].max() < 0.35, tone[glass]  # dark by the density's measure (grey under 0.35)
+    assert 0.35 < tone[glass][:3].max() < 0.55, tone[glass]  # a dark tone (density 0.5–0.6), not a solid black
     # The lot's two materials are told apart by a line (both are left white).
     bpy.ops.wm.open_mainfile(filepath=str(tmp_path / "blockout" / "panel1" / r["take"] / "scene.blend"))
     lot = bpy.data.objects["site_ground"]

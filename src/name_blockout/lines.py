@@ -13,12 +13,15 @@ The author's rule for a manga background's finish:
 How deep a boundary is, is measured as the eye sees depth: by the difference of 1/distance on its two sides (as
 parallax), against the picture's own deepest boundaries (the deepest twentieth of them count 1: a room's sofa before
 its wall, a lot's gatepost before the sky, a house seen from a hill before the land behind it). Beyond the picture's
-foreground a boundary counts less again, as its distance grows (the middle distance is told by tones, not lines).
+foreground a boundary counts less again, by the square of its distance (the middle distance is told by tones, not
+lines: a tree twice the foreground off against the sky gets half the line of one in the foreground).
 So one rule gives all three: a near thing against a far wall gets a thick line; the same thing's foot on the ground
-a thin one; a gatepost ten foregrounds off a hair, and a tree 200 m off against the sky none.
+a thin one; a gatepost a few foregrounds off the finest, and a tree 200 m off against the sky none.
 
-A line is black, and no thinner than a pen's finest (0.1 mm): a boundary too shallow for that gets no line at all
-(never a paler one: a grey hair is neither a line nor a tone, and breaks into dots in print).
+A line is black, and no thinner than a pen's finest (0.15 mm): a boundary too shallow for that gets no line at all
+(never a paler one: a grey hair is neither a line nor a tone, and breaks into dots in print). A thing's outline
+(where it stands before another surface, however little behind) is never left out near by: it gets at least the
+finest line, so a stone on the ground keeps a closed outline.
 
 Where the lines thin out, the tones take over (`tone_floor`): a standing thing in the middle distance is never left
 white on a white ground.
@@ -39,8 +42,8 @@ from .far import FAR_M, NEAR_M
 #: depth asks for less than W_DROP_MM gets no line (it is told by the tones on its two sides); from there up to
 #: W_MIN_MM it gets the finest. Every line is black.
 W_MAX_MM = 0.5
-W_MIN_MM = 0.1
-W_DROP_MM = 0.07
+W_MIN_MM = 0.15
+W_DROP_MM = 0.1
 #: Two faces fold if their normals differ by more than this.
 FOLD_MIN_DEG = 30.0
 #: The foreground's distance and the deepest boundaries' are kept within these (m): nearer, a boundary is as deep
@@ -52,8 +55,16 @@ D_REF_MAX = FAR_M
 D_REF_GAP = 0.05
 D_REF_PERCENTILE = 5.0
 DEEPEST_PERCENTILE = 95.0
-#: Beyond this many foregrounds off a boundary counts less: × (FADE_FROM × foreground / distance).
-FADE_FROM = 2.0
+#: Beyond this many foregrounds off a boundary counts less: × (FADE_FROM × foreground / distance) ^ FADE_POWER.
+FADE_FROM = 1.0
+FADE_POWER = 2.0
+#: Where one surface stands before another by more than this share of its distance, it is a thing's outline (not a
+#: curved surface's own turn): it counts at least as a fold in the foreground, up to OUTLINE_REACH foregrounds off
+#: (as far as a floor's joints are drawn: an outline matters more than a joint), then less with distance.
+OUTLINE_GAP = 0.01
+OUTLINE_REACH = 4.0
+#: The tones take over from the lines (tone_floor) from this many foregrounds off, evenly with distance.
+TONE_FROM = 2.0
 #: Width = W_MAX × depth^GAMMA (the square root: a boundary a quarter as deep gets half the width, so the middle
 #: depths keep some weight, as a pen's three or four sizes).
 GAMMA = 0.5
@@ -93,16 +104,19 @@ def scales(z: np.ndarray, thing: np.ndarray, gap: np.ndarray) -> tuple[float, fl
 
 
 def line_fade(z: np.ndarray, thing: np.ndarray, d_ref: float) -> np.ndarray:
-    """How much a boundary's depth counts at each pixel's distance: 1 up to FADE_FROM foregrounds off, then less as
-    the distance grows (0 on the sky)."""
-    return np.where(thing, np.minimum(1.0, FADE_FROM * d_ref / np.maximum(z, 1e-3)), 0.0).astype(np.float32)
+    """How much a boundary's depth counts at each pixel's distance: 1 up to FADE_FROM foregrounds off, then less by
+    the distance's FADE_POWER (0 on the sky)."""
+    near = np.minimum(1.0, FADE_FROM * d_ref / np.maximum(z, 1e-3))
+    return np.where(thing, near**FADE_POWER, 0.0).astype(np.float32)
 
 
 def tone_floor(z: np.ndarray, standing: np.ndarray, d_ref: float) -> np.ndarray:
     """The least tone density each pixel should show: where the lines have thinned out with distance, a standing
     thing (`standing`: not the ground, a floor or a roof's top, not the far band's layers) gets up to MID_TONE, so
-    its shape is told by its tone against the white round it; 0 elsewhere."""
-    return np.where(standing, MID_TONE * (1.0 - line_fade(z, standing, d_ref)), 0.0).astype(np.float32)
+    its shape is told by its tone against the white round it; 0 elsewhere. (From TONE_FROM foregrounds off, evenly:
+    the things just behind the foreground keep their white faces.)"""
+    lines_left = np.minimum(1.0, TONE_FROM * d_ref / np.maximum(z, 1e-3))
+    return np.where(standing, MID_TONE * (1.0 - lines_left), 0.0).astype(np.float32)
 
 
 def _count(mask: np.ndarray, r: int) -> np.ndarray:
@@ -151,9 +165,12 @@ def boundary_depths(
     if ground is not None:
         # Beyond the foreground, where the ground ends against the sky is a horizon, not a thing's outline: told
         # by the white ground under the sky or the backdrop's tones, with no line.
-        horizon = thing & ground & (z > FADE_FROM * d_ref)
+        horizon = thing & ground & (z > TONE_FROM * d_ref)
         gap = np.where(horizon, solid, gap)
     depth = np.minimum(1.0, gap * deepest) * line_fade(z, thing, d_ref)
+    # A thing's outline, however shallow: at least the finest line, up to OUTLINE_REACH foregrounds off.
+    outline = thing & (gap * np.maximum(z, 1e-3) > OUTLINE_GAP)
+    depth = np.maximum(depth, np.where(outline, FOLD_DEPTH * np.minimum(1.0, q * d_ref * OUTLINE_REACH), 0.0))
     if normal is not None:
         cos_min = math.cos(math.radians(FOLD_MIN_DEG))
         hard = thing if soft is None else thing & ~soft
