@@ -333,11 +333,12 @@
             "seed": { "description": "家並みを決める種（同じ種なら同じ街）。", "type": "integer", "minimum": 0 },
             "reachM": { "description": "カメラからどこまで並べるか（既定: 絵に見える地面の先まで、最大 250m）。", "type": "number", "exclusiveMinimum": 0 },
             "street": {
-              "description": "街の道の向き（場の座標の X か Y）と、そのうち 1 本が通る所（X なら y、Y なら x の値、m）。場所に道があるなら、その道の中心に合わせると、街の道が場所の道の続きになる。既定は X・0。",
+              "description": "街の道の向き（場の座標の X か Y）と、そのうち 1 本が通る所（X なら y、Y なら x の値、m）。場所に道があるなら、その道の中心に合わせると、街の道が場所の道の続きになる。既定は X・0・幅 6m。",
               "type": "object",
               "properties": {
                 "axis": { "enum": ["X", "Y"] },
-                "atM": { "type": "number" }
+                "atM": { "type": "number" },
+                "widthM": { "description": "その向きの道の幅（既定 6m）。場所の道の幅に合わせる。", "type": "number", "minimum": 3, "maximum": 30 }
               },
               "additionalProperties": false
             },

@@ -509,7 +509,7 @@ def to_svg(top: dict) -> str:
             (x0, y0), (x1, y1) = px(a), px(b)
             out.append(
                 f'<line x1="{x0:.1f}" y1="{y0:.1f}" x2="{x1:.1f}" y2="{y1:.1f}" stroke="#ece7dc" '
-                f'stroke-width="{max(1.0, around["streetM"] * scale):.1f}" stroke-opacity="0.7"/>'
+                f'stroke-width="{max(1.0, street.get("widthM", around["streetM"]) * scale):.1f}" stroke-opacity="0.7"/>'
             )
         for house in around["houses"]:
             out.append(f'<polygon points="{pts(house["rectM"])}" fill="#f3ead8" stroke="#b9a377" stroke-width="1"/>')

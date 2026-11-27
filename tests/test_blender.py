@@ -913,7 +913,7 @@ def test_a_town_stands_on_the_land_a_place_was_modelled_on(tmp_path):
     r = run_blockout(tmp_path / "指示.json", log=lambda *_: None)[0]
     plan = json.loads((tmp_path / "blockout" / "panel1" / r["take"] / "plan.json").read_text(encoding="utf-8"))
     around = plan["surroundings"]
-    assert around["street"] == {"axis": "X", "atM": -20.0}
+    assert around["street"] == {"axis": "X", "atM": -20.0, "widthM": 6.0}
     # From beyond the house and the tree (the farthest of them about 50 m off), not from the land's edge 170 m off.
     assert 45 < around["houses"][0]["distanceM"] < 80, around["houses"][0]
     for house in around["houses"]:

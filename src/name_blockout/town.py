@@ -8,8 +8,8 @@ same instruction gives the same town.
 
 - a street every BLOCK_DEEP_M (two rows of plots back to back, each plot's house facing its street) and a cross
   street at the end of each block (BLOCK_LONG_M, four to six plots); the streets run along the world's X, or its
-  Y, and one of them through a given place (`street`: {"axis", "atM"}), so the town's streets carry on the
-  place's own road;
+  Y, and one of them through a given place, as wide as given (`street`: {"axis", "atM", "widthM"}), so the
+  town's streets carry on the place's own road;
 - on a plot a house (two storeys with a gable roof; some of one storey, some flat-roofed, now and then a block of
   flats), sometimes a tree in its garden, now and then nothing (a car park, a field);
 - utility poles along the streets.
@@ -126,11 +126,12 @@ def _house(rng: random.Random, x0: float, wide: float, street_y: float, faces: i
     }
 
 
-def street_of(spec: dict | None) -> tuple[str, float]:
-    """The town's streets: the axis they run along, and where one of them runs through (y for X, x for Y)."""
+def street_of(spec: dict | None) -> tuple[str, float, float]:
+    """The town's streets: the axis they run along, where one of them runs through (y for X, x for Y), and how wide
+    they are (the cross streets keep STREET_M)."""
     street = (spec or {}).get("street") or {}
     axis = street.get("axis") if street.get("axis") in AXES else "X"
-    return axis, float(street.get("atM") or 0.0)
+    return axis, float(street.get("atM") or 0.0), float(street.get("widthM") or STREET_M)
 
 
 def town(camera: Camera, spec: dict | None = None, reach: float | None = None) -> dict:
@@ -140,7 +141,8 @@ def town(camera: Camera, spec: dict | None = None, reach: float | None = None) -
     spec = spec or {}
     seed = int(spec.get("seed") or 0)
     reach = float(spec.get("reachM") or reach or seen_reach(camera))
-    axis, through = street_of(spec)
+    axis, through, wide_street = street_of(spec)
+    deep = 2 * PLOT_DEEP_M + wide_street  # from one street's middle to the next
     px, py = camera.position[0], camera.position[1]
     lo, hi = (math.radians(a) for a in view_azimuths(camera, margin_deg=6.0))
     all_round = hi - lo >= 2 * math.pi - 1e-6
@@ -169,16 +171,22 @@ def town(camera: Camera, spec: dict | None = None, reach: float | None = None) -
         return [round(x, 2), round(y, 2), 0.0]
 
     houses, trees, poles, streets = [], [], [], []
-    row0 = math.floor((pv - reach) / BLOCK_DEEP_M) - 1
-    row1 = math.floor((pv + reach) / BLOCK_DEEP_M) + 1
+    row0 = math.floor((pv - reach) / deep) - 1
+    row1 = math.floor((pv + reach) / deep) + 1
     other = "Y" if axis == "X" else "X"
     for row in range(row0, row1 + 1):
         # The row's street runs along u with its middle on the row's line; the row's two lines of plots face it
         # (from its far side) and the next row's street.
-        south = row * BLOCK_DEEP_M + STREET_M / 2
-        north = (row + 1) * BLOCK_DEEP_M - STREET_M / 2
+        south = row * deep + wide_street / 2
+        north = (row + 1) * deep - wide_street / 2
         streets.append(
-            {"axis": axis, "atM": round(row * BLOCK_DEEP_M + through, 2), "fromM": round(pu - reach, 1), "toM": round(pu + reach, 1)}
+            {
+                "axis": axis,
+                "atM": round(row * deep + through, 2),
+                "fromM": round(pu - reach, 1),
+                "toM": round(pu + reach, 1),
+                "widthM": wide_street,
+            }
         )
         for block, x_start, plots in _row_blocks(seed, row, pu - reach, pu + reach):
             # The cross street at the block's end, from this row's street to the next.
@@ -186,8 +194,9 @@ def town(camera: Camera, spec: dict | None = None, reach: float | None = None) -
                 {
                     "axis": other,
                     "atM": round(x_start + BLOCK_LONG_M + STREET_M / 2, 2),
-                    "fromM": round(row * BLOCK_DEEP_M + through, 2),
-                    "toM": round((row + 1) * BLOCK_DEEP_M + through, 2),
+                    "fromM": round(row * deep + through, 2),
+                    "toM": round((row + 1) * deep + through, 2),
+                    "widthM": STREET_M,
                 }
             )
             for side, (street_y, faces) in enumerate(((south, -1), (north, 1))):
@@ -231,8 +240,8 @@ def town(camera: Camera, spec: dict | None = None, reach: float | None = None) -
         "kind": "town",
         "seed": seed,
         "reachM": round(reach, 1),
-        "streetM": STREET_M,
-        "street": {"axis": axis, "atM": through},
+        "streetM": wide_street,
+        "street": {"axis": axis, "atM": through, "widthM": wide_street},
         "streets": streets,
         "houses": houses[:MAX_HOUSES],
         "trees": trees[: MAX_HOUSES * 2],
@@ -362,7 +371,7 @@ def town_words(made: dict) -> str:
         return "まわりは市街地: 絵に見える範囲に家は入りませんでした（場所の向こう側が絵に出ていないか、場所の敷地が絵の端まで続いている）"
     near, far = made["houses"][0]["distanceM"], made["houses"][-1]["distanceM"]
     street = made.get("street") or {"axis": "X", "atM": 0.0}
-    runs = f"道は {street['axis']} の向きで、{'y' if street['axis'] == 'X' else 'x'} = {street['atM']:g} を 1 本が通る"
+    runs = f"道は {street['axis']} の向き（幅 {made['streetM']:g} m）で、{'y' if street['axis'] == 'X' else 'x'} = {street['atM']:g} を 1 本が通る"
     return (
         f"まわりは市街地: 家 {len(made['houses'])} 軒（カメラから {near:.0f}〜{far:.0f} m）"
         f"・庭木 {len(made['trees'])} 本・電柱 {len(made['poles'])} 本。{runs}。場所の物より向こう、場所の物の囲みと敷地の外にだけ置く（道幅 {made['streetM']:g} m あけて、近景 {NEAR_M:g} m の中には置かない）"

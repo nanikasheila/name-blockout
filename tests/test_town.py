@@ -103,13 +103,26 @@ def test_a_street_runs_where_the_place_s_road_does_and_along_either_axis():
     camera = fit_camera(shot)
     plain = town(camera, {"seed": 4, "reachM": 150})
     moved = town(camera, {"seed": 4, "reachM": 150, "street": {"axis": "X", "atM": -18.5}})
-    assert plain["street"] == {"axis": "X", "atM": 0.0} and moved["street"] == {"axis": "X", "atM": -18.5}
+    assert plain["street"] == {"axis": "X", "atM": 0.0, "widthM": STREET_M} and moved["street"] == {
+        "axis": "X",
+        "atM": -18.5,
+        "widthM": STREET_M,
+    }
     lines = [st["atM"] for st in moved["streets"] if st["axis"] == "X"]
     assert -18.5 in lines and all(abs((v + 18.5) / BLOCK_DEEP_M - round((v + 18.5) / BLOCK_DEEP_M)) < 1e-6 for v in lines)
     for house in moved["houses"]:
         ys = [y for _, y in rect(house)]
         assert all(not (min(ys) < line + STREET_M / 2 - 1e-6 and max(ys) > line - STREET_M / 2 + 1e-6) for line in lines)
     assert "y = -18.5 を 1 本が通る" in town_words(moved)
+    # As wide as the place's road: the houses and the poles stand off it, and the next street is as much farther.
+    wide = town(camera, {"seed": 4, "reachM": 150, "street": {"axis": "X", "atM": -18.5, "widthM": 8.2}})
+    assert wide["streetM"] == 8.2 and "幅 8.2 m" in town_words(wide)
+    lines = sorted(st["atM"] for st in wide["streets"] if st["axis"] == "X")
+    assert -18.5 in lines and lines[1] - lines[0] == pytest.approx(BLOCK_DEEP_M + 2.2)
+    for house in wide["houses"]:
+        ys = [y for _, y in rect(house)]
+        assert all(not (min(ys) < line + 4.1 - 1e-6 and max(ys) > line - 4.1 + 1e-6) for line in lines)
+    assert wide["poles"] and all(min(abs(p["centreM"][1] - line) for line in lines) > 4.1 for p in wide["poles"])
     # Along Y: the same town turned, its houses fronting ±X, their footprints deep along X.
     turned = town(camera, {"seed": 4, "reachM": 150, "street": {"axis": "Y", "atM": 10.0}})
     assert turned["houses"] and {h["front"] for h in turned["houses"]} <= {"-X", "+X"}
