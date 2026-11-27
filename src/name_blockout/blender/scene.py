@@ -586,7 +586,8 @@ def mark_material_borders(obj) -> int:
     kerb) marked to be drawn: the ground is left white whatever it is made of, so without a line the two would
     run into one. An edge between two faces of different materials; or, where the materials are separate pieces,
     the open edge of one piece lying against a face of another material (the lot's own outer edge, with nothing
-    beside it, is not one). Returns how many edges were marked."""
+    beside it, is not one). Pieces modelled as closed slabs need no mark: their rims are folds, drawn as such.
+    Returns how many edges were marked."""
     from mathutils.bvhtree import BVHTree
 
     mesh = obj.data
