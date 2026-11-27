@@ -8,7 +8,7 @@ the picture goes to the author instead of round and round.
 
   講評/<コマ>/<回>/
     並べた絵.png   the reference (left) and the take (right); the take alone when there is no reference
-    拡大_….png     the emptiest cells closer, at the take's own pixels
+    拡大_….png     the emptiest cells closer (a small take's pixels made larger)
     数字.json      the numbers (density.py; the lines' widths from check.json)
     依頼.md        what the critic is asked (fixed words: the same pack gives the same request)
     講評.json      the critic's answer, once it is recorded (critique --answer)
@@ -43,6 +43,7 @@ MAX_ROUNDS = 3
 #: The sheet's widest side in pixels (a critic reads pictures of about this size; the cells closer keep the rest).
 SHEET_MAX_PX = 2400
 ZOOMS = 2
+ZOOM_MIN_PX = 600
 PAPER = 1.0
 GAP_SHARE = 0.02
 
@@ -155,8 +156,12 @@ def side_by_side(left: np.ndarray | None, right: np.ndarray, max_px: int = SHEET
 
 
 def _cell(picture: np.ndarray, row: int, column: int) -> np.ndarray:
+    """A grid cell of a picture, its pixels made larger (each one a square of pixels, nothing invented) until it
+    is at least ZOOM_MIN_PX high: a cell of a small take is otherwise a stamp nobody can read a line's weight from."""
     y0, y1, x0, x1 = density.cell_box(picture.shape[:2], row, column)
-    return picture[y0:y1, x0:x1]
+    cell = picture[y0:y1, x0:x1]
+    times = max(1, -(-ZOOM_MIN_PX // max(cell.shape[0], 1)))
+    return np.repeat(np.repeat(cell, times, axis=0), times, axis=1) if times > 1 else cell
 
 
 def brief(label: str, take: str, round_number: int, numbers: dict, criteria: list[dict], zooms: list[str]) -> str:

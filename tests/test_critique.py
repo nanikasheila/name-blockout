@@ -75,6 +75,8 @@ def test_the_pack_holds_the_pictures_the_numbers_and_the_request(tmp_path):
     assert numbers["density"]["ratios"]["dark"] == 0.5 and not numbers["density"]["pass"]
     assert numbers["lines"]["foregroundM"] == 5.0
     assert pack["zooms"] == ["拡大_下右.png"] and "拡大_下右.png" in store.saved
+    # A cell closer is large enough to read (a small take's pixels made larger, not a stamp).
+    assert store.saved["拡大_下右.png"].shape[0] >= 600
     # The reference left, the take right, on one sheet.
     sheet = store.saved[SHEET_FILE]
     assert sheet.shape[1] > 300 and sheet[75, 140, 0] < 0.1 and sheet[75, sheet.shape[1] - 10, 0] > 0.9
