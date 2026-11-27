@@ -678,8 +678,8 @@ def test_device_cpu_when_asked_or_no_gpu(monkeypatch):
 
 def _lot_from_above(folder: Path, half: float = 30.0, tree: bool = False) -> None:
     """A place seen from above: a flat-roofed block (its roof a concrete slab) with a glass front, on a lot (`half`
-    across each way from its middle) that is lawn on one side and paving on the other; with `tree`, a tree beside
-    the block."""
+    across each way from its middle) that is lawn on one side and paving on the other; with `tree`, a tree in a
+    planter before the block."""
     import bmesh
     import bpy
 
@@ -704,10 +704,17 @@ def _lot_from_above(folder: Path, half: float = 30.0, tree: bool = False) -> Non
         bm = bmesh.new()
         bmesh.ops.create_icosphere(bm, subdivisions=2, radius=2.2)
         bmesh.ops.translate(bm, vec=(-8.0, -8.0, 4.6), verts=bm.verts)
+        # …standing in a planter (part of the same object, as a potted plant is modelled: a second slot).
+        pot = bmesh.ops.create_cube(bm, size=1.0)
+        bmesh.ops.scale(bm, vec=(1.4, 1.4, 0.9), verts=pot["verts"])
+        bmesh.ops.translate(bm, vec=(-8.0, -8.0, 0.45), verts=pot["verts"])
+        for face in {f for v in pot["verts"] for f in v.link_faces}:
+            face.material_index = 1
         crown = bpy.data.meshes.new("tree_crown")
         bm.to_mesh(crown)
         bm.free()
         crown.materials.append(bpy.data.materials.new("leaf"))
+        crown.materials.append(bpy.data.materials.get("concrete") or bpy.data.materials.new("concrete"))
         coll.objects.link(bpy.data.objects.new("tree_crown", crown))
     lot = bpy.data.meshes.new("site_ground")
     xs = (-half, 0, half)
@@ -844,9 +851,14 @@ def test_develop_a_town_round_the_place_and_a_tree_by_its_shade(tmp_path):
     box = (slice(min(ys), max(ys) + 1), slice(min(xs), max(xs) + 1))
     assert alpha[box].max() < 0.05, alpha[box].max()
     assert {round(float(v), 2) for v in tone[crown][..., 0].ravel()} >= {0.8, 0.6}  # 草: its lit side and its shade
+    # The planter it stands in is a made thing: lined as one.
+    assert list(bpy.data.objects["tree_crown"]["nb_natural_slots"]) == [True, False]
+    y, x = at((-8.7, -8.7, 0.9))
+    assert alpha[y - 4 : y + 5, x - 4 : x + 5].max() > 0.9
     # The lot lies on the ground round it and casts no shadow of its own: no strip of shade along its edge, where
     # the town's ground begins (the town stands on that ground, just under the lot).
-    assert around["levelM"] == -0.05 and abs(houses.location.z + 0.05) < 1e-6
+    assert around["levelM"] == -0.05 and {h["centreM"][2] for h in around["houses"]} == {-0.05}
+    assert abs(min(v.co.z for v in houses.data.vertices) + 0.05) < 1e-6
     for along in (-10.0, -5.0, 5.0):
         y, x = at((-14.08, along, 0.0))
         if 2 <= y < alpha.shape[0] - 2 and 2 <= x < alpha.shape[1] - 2:
@@ -871,3 +883,40 @@ def test_develop_a_town_round_the_place_and_a_tree_by_its_shade(tmp_path):
         inked += int((alpha[area] > 0.5).sum())
         toned += int(((tone[area][..., 3] > 0.5) & (tone[area][..., :3].max(axis=-1) < 0.8)).sum())
     assert inked > 50 and toned > 200, (inked, toned)
+
+
+@needs_blender
+def test_a_town_stands_on_the_land_a_place_was_modelled_on(tmp_path):
+    """A place whose ground goes out to the horizon (a plane 300 m across, 0.4 m up): that is land, not a lot, so
+    the town stands on it, at its height, from just beyond the place's things."""
+    from name_blockout.pipeline import run_blockout
+    from name_blockout.town import rect
+
+    _lot_from_above(tmp_path / "素材", half=150.0, tree=True)
+    import bpy
+
+    bpy.ops.wm.open_mainfile(filepath=str(tmp_path / "素材" / "lot.blend"))
+    for obj in bpy.data.objects:
+        obj.location.z += 0.4
+    bpy.ops.wm.save_mainfile()
+    data = json.loads((ROOT / "examples" / "develop" / "指示.json").read_text(encoding="utf-8"))
+    data["folders"] = {"assets": "素材"}
+    shot = data["shots"][0]
+    shot["objects"], shot["figures"] = [], []
+    shot["frame"] = {"boxMm": [17, 17, 110, 77], "dpi": 150, "shapeMm": [[20, 20], [107, 20], [107, 74], [20, 74]]}
+    shot["ruler"] = {"points": 2, "horizonMm": [[20, 8], [107, 8]], "vanishingMm": [[150, 8], [-40, 8]]}
+    shot["camera"] = {"heightM": 14.0, "positionM": [-30, -30, 14.0], "lensMm": 37}
+    shot["place"] = {"asset": "家"}
+    shot["surroundings"] = {"kind": "town", "seed": 4, "street": {"axis": "X", "atM": -20.0}}
+    (tmp_path / "指示.json").write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+
+    r = run_blockout(tmp_path / "指示.json", log=lambda *_: None)[0]
+    plan = json.loads((tmp_path / "blockout" / "panel1" / r["take"] / "plan.json").read_text(encoding="utf-8"))
+    around = plan["surroundings"]
+    assert around["street"] == {"axis": "X", "atM": -20.0}
+    # From beyond the house and the tree (the farthest of them about 50 m off), not from the land's edge 170 m off.
+    assert 45 < around["houses"][0]["distanceM"] < 80, around["houses"][0]
+    for house in around["houses"]:
+        on_land = all(-150 < x < 150 and -150 < y < 150 for x, y in rect(house))
+        assert abs(house["centreM"][2] - (0.4 if on_land else 0.0)) < 2e-3, house  # off the land's edge: on the ground round it
+    assert sum(h["centreM"][2] > 0.39 for h in around["houses"]) > 10

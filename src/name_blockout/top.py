@@ -260,6 +260,9 @@ def _around(made: dict | None, place_unread: bool) -> dict | None:
         ],
         "trees": [[t["centreM"][0], t["centreM"][1], t["radiusM"]] for t in made["trees"]],
         "poles": [p["centreM"][:2] for p in made["poles"]],
+        "street": made.get("street"),
+        "streetM": made.get("streetM"),
+        "streets": made.get("streets") or [],
         "reachM": made["reachM"],
         "dropped": made.get("dropped"),
     }
@@ -495,12 +498,25 @@ def to_svg(top: dict) -> str:
     # The town round the place: its houses (square to the grid), garden trees and poles, lightly.
     around = top.get("surroundings")
     if around:
+        # Its streets' lines, right through the place: where the place has a road of its own, one of them should
+        # lie on it (surroundings.street).
+        for street in around.get("streets") or []:
+            a, b = (
+                ((street["fromM"], street["atM"]), (street["toM"], street["atM"]))
+                if street["axis"] == "X"
+                else ((street["atM"], street["fromM"]), (street["atM"], street["toM"]))
+            )
+            (x0, y0), (x1, y1) = px(a), px(b)
+            out.append(
+                f'<line x1="{x0:.1f}" y1="{y0:.1f}" x2="{x1:.1f}" y2="{y1:.1f}" stroke="#ece7dc" '
+                f'stroke-width="{max(1.0, around["streetM"] * scale):.1f}" stroke-opacity="0.7"/>'
+            )
         for house in around["houses"]:
             out.append(f'<polygon points="{pts(house["rectM"])}" fill="#f3ead8" stroke="#b9a377" stroke-width="1"/>')
         for x, y, r in around["trees"]:
-            (tx, ty), (ex, _) = px((x, y)), px((x + r, y))
+            tx, ty = px((x, y))
             out.append(
-                f'<circle cx="{tx:.1f}" cy="{ty:.1f}" r="{max(2.0, abs(ex - tx)):.1f}" fill="#e3ecd9" stroke="#a9b99a" stroke-width="1"/>'
+                f'<circle cx="{tx:.1f}" cy="{ty:.1f}" r="{max(2.0, r * scale):.1f}" fill="#e3ecd9" stroke="#a9b99a" stroke-width="1"/>'
             )
         for x, y in around["poles"]:
             tx, ty = px((x, y))

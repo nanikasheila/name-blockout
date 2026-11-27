@@ -379,8 +379,15 @@ def develop_passes(plan: dict, built: dict, out_dir: Path, samples: int = 16) ->
         if obj.get("nb_natural") and obj.pass_index == 0:
             obj.pass_index = NATURAL_INDEX
             if obj.type == "MESH":
-                # All of it (a trunk's edges, a rock's facets as much as a crown's lumps): no folds, no texture lines.
-                mark_foliage(obj)
+                # All of it (a trunk's edges, a rock's facets as much as a crown's lumps): no folds, no texture
+                # lines. A made part of it (the pot of a potted plant) stays as it is, and keeps its lines.
+                slots = list(obj.get("nb_natural_slots") or [])
+                if slots and not all(slots):
+                    marked = obj.data.attributes.get("freestyle_face")
+                    already = [m.value for m in marked.data] if marked else [False] * len(obj.data.polygons)
+                    mark_foliage(obj, [was or slots[min(p.material_index, len(slots) - 1)] for was, p in zip(already, obj.data.polygons)])
+                else:
+                    mark_foliage(obj)
     grid = bpy.data.collections.get(PREFIX + "ground")
     if grid is not None:
         grid.hide_render = True
@@ -397,7 +404,8 @@ def develop_passes(plan: dict, built: dict, out_dir: Path, samples: int = 16) ->
     seen = depths[..., 3] > 0.5
     backdrop = seen & (np.abs(depths[..., 2] - BACKDROP_INDEX) < 0.5)
     lot = seen & (np.abs(depths[..., 2] - GROUND_INDEX) < 0.5)
-    natural = seen & (np.abs(depths[..., 2] - NATURAL_INDEX) < 0.5)
+    # A natural thing's natural faces (marked above): its made parts are lined as any made thing.
+    natural = seen & (np.abs(depths[..., 2] - NATURAL_INDEX) < 0.5) & (depths[..., 1] > 0.5)
     ink, line_info = boundary_lines(
         depths[..., 0],
         seen,

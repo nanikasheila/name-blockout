@@ -116,13 +116,18 @@ def cmd_check(a) -> int:
 
     data = read_instruction(a.instruction)
     findings = check_instruction(data, a.instruction)
-    questions = pick_questions(findings, a.questions, answered(data, background_folder(data, Path(a.instruction).resolve())))
+    done = answered(data, background_folder(data, Path(a.instruction).resolve()))
+    questions = pick_questions(findings, a.questions, done)
+    # A finding whose question was answered still stands in the instruction as written: said so, since its words
+    # (what the tool does when nobody says) no longer hold.
+    findings = [{**f, "answered": True} if "question" in f and f"{f['shot']}:{f['path']}" in done else f for f in findings]
     if a.json:
         _print({"findings": findings, "questions": questions}, True)
     else:
         marks = {"error": "✗", "warn": "!", "info": "・"}
         for f in findings:
-            print(f"{marks[f['level']]} {f['label']} {f['path']}: {f['message']}")
+            told = "（答え済み: 要求の答えを使います）" if f.get("answered") else ""
+            print(f"{marks[f['level']]} {f['label']} {f['path']}: {f['message']}{told}")
         if not findings:
             print("点検: 問題なし")
         for q in questions:
