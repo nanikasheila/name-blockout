@@ -38,6 +38,8 @@ from mathutils import Vector
 
 from ..lines import boundary_lines, tone_floor
 from ..materials import DEFAULT, LIBRARY
+from .picture import load as _load
+from .picture import save as _save
 from .render import inner_px, line_px, render_passes, setup
 from .scene import PREFIX, collection
 
@@ -267,17 +269,6 @@ def _render(path: Path, samples: int, transparent: bool = True, exact: bool = Fa
     image.pixels.foreach_get(pixels)
     bpy.data.images.remove(image)
     return pixels.reshape(h, w, 4)[::-1]  # rows from the top
-
-
-def _save(path: Path, rgba: np.ndarray) -> Path:
-    h, w = rgba.shape[:2]
-    image = bpy.data.images.new(path.stem, w, h, alpha=True)
-    image.pixels.foreach_set(np.ascontiguousarray(rgba[::-1]).astype(np.float32).ravel())
-    image.filepath_raw = str(path)
-    image.file_format = "PNG"
-    image.save()
-    bpy.data.images.remove(image)
-    return path
 
 
 def _over(top: np.ndarray, bottom: np.ndarray) -> np.ndarray:
@@ -842,15 +833,6 @@ def white_on_beta(lines: np.ndarray, tone: np.ndarray, reach: int = 0) -> np.nda
     out = lines.copy()
     out[beta, :3] = 1.0 - out[beta, :3]
     return out
-
-
-def _load(path: Path) -> np.ndarray:
-    image = bpy.data.images.load(str(path), check_existing=False)
-    w, h = image.size
-    pixels = np.empty(w * h * 4, dtype=np.float32)
-    image.pixels.foreach_get(pixels)
-    bpy.data.images.remove(image)
-    return pixels.reshape(h, w, 4)[::-1]
 
 
 def _blocked(scene, depsgraph, start: Vector, ray: Vector) -> bool:

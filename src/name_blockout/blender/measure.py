@@ -171,6 +171,73 @@ def box_outline(p: Projector, gauge: dict):
     return [min(xs), min(ys), max(xs), max(ys)]
 
 
+#: Footprints are measured to this grid (m), and things smaller than this from above are left out (m²).
+FOOTPRINT_GRID = 0.05
+FOOTPRINT_MIN_AREA = 0.02
+
+
+def hull(points: list[tuple[float, float]]) -> list[tuple[float, float]]:
+    """The convex outline of points on the ground, counter-clockwise (Andrew's monotone chain)."""
+    pts = sorted(set(points))
+    if len(pts) < 3:
+        return pts
+
+    def turn(o, a, b):
+        return (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
+
+    lower: list = []
+    for q in pts:
+        while len(lower) >= 2 and turn(lower[-2], lower[-1], q) <= 0:
+            lower.pop()
+        lower.append(q)
+    upper: list = []
+    for q in reversed(pts):
+        while len(upper) >= 2 and turn(upper[-2], upper[-1], q) <= 0:
+            upper.pop()
+        upper.append(q)
+    return lower[:-1] + upper[:-1]
+
+
+def footprints(objects) -> list[dict]:
+    """What a place holds, seen from straight above (for the top view): each mesh's outline on the ground (the
+    convex hull of its vertices as the scene shows them, modifiers applied), how high it reaches, and whether it is
+    a ground (a lot, a lawn, a terrace). The largest first."""
+    depsgraph = bpy.context.evaluated_depsgraph_get()
+    out = []
+    for obj in objects:
+        if obj.type != "MESH":
+            continue
+        shown = obj.evaluated_get(depsgraph)
+        mesh = shown.to_mesh()
+        n = len(mesh.vertices)
+        if n < 3:
+            shown.to_mesh_clear()
+            continue
+        co = np.empty(n * 3, dtype=np.float32)
+        mesh.vertices.foreach_get("co", co)
+        shown.to_mesh_clear()
+        m = np.array(obj.matrix_world, dtype=np.float64)
+        world = co.reshape(n, 3).astype(np.float64) @ m[:3, :3].T + m[:3, 3]
+        cells = np.unique(np.round(world[:, :2] / FOOTPRINT_GRID).astype(np.int64), axis=0)
+        outline = hull([(float(x) * FOOTPRINT_GRID, float(y) * FOOTPRINT_GRID) for x, y in cells])
+        if len(outline) < 3:
+            continue
+        area = abs(sum(a[0] * b[1] - b[0] * a[1] for a, b in zip(outline, outline[1:] + outline[:1]))) / 2
+        if area < FOOTPRINT_MIN_AREA:
+            continue
+        out.append(
+            {
+                "name": obj.name,
+                "footprintM": [[round(x, 2), round(y, 2)] for x, y in outline],
+                "heightM": [round(float(world[:, 2].min()), 2), round(float(world[:, 2].max()), 2)],
+                "areaM2": round(area, 2),
+                "ground": bool(obj.get("nb_ground")),
+            }
+        )
+    out.sort(key=lambda o: -o["areaM2"])
+    return out
+
+
 def measure(plan: dict, built: dict) -> dict:
     width, height = plan["targets"]["sizePx"]
     p = Projector(width, height)

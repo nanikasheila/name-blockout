@@ -132,6 +132,23 @@ def test_develop_example(tmp_path):
     # A Blockout of the same shot does not count as the development's last build.
     again = run_blockout(tmp_path / "指示.json", preview_dpi=60, only_changed=True, log=lambda *_: None, develop=True)
     assert again[0]["status"] == "unchanged"
+    # The layout from above is written with the take (俯瞰図), and the take can go to a critic: beside a reference
+    # (here the Blockout-like line picture of the same take: emptier than the finished one, so nothing is too empty).
+    assert (tmp_path / "俯瞰図" / "panel1.svg").exists() and (tmp_path / "blockout" / "panel1" / "1" / "俯瞰図.svg").exists()
+    from name_blockout.cli import main
+
+    reference = tmp_path / "案" / "panel1" / "1" / "線画.png"
+    assert main(["critique", str(tmp_path / "指示.json"), "--shot", "panel1", "--reference", str(reference), "--json"]) == 0
+    pack = tmp_path / "講評" / "panel1" / "1"
+    numbers = json.loads((pack / "数字.json").read_text(encoding="utf-8"))
+    assert numbers["take"] == "1" and numbers["density"]["sameFraming"] and numbers["density"]["pass"], numbers["density"]
+    assert numbers["lines"]["widthsMm"] and numbers["density"]["take"]["dark"] > 0
+    sheet = bpy.data.images.load(str(pack / "並べた絵.png"))
+    assert sheet.size[0] > 2 * 0.9 * fw and sheet.size[1] == fh
+    answer = tmp_path / "答え.json"
+    answer.write_text(json.dumps({"problems": []}), encoding="utf-8")
+    assert main(["critique", str(tmp_path / "指示.json"), "--shot", "panel1", "--answer", str(answer)]) == 0
+    assert (pack / "講評.json").exists()
 
 
 @needs_blender
@@ -388,6 +405,12 @@ def test_develop_in_a_place(tmp_path):
     assert (tmp_path / "案" / "panel1" / "1" / "完成.png").exists()
     plan = json.loads((tmp_path / "blockout" / "panel1" / "2" / "plan.json").read_text(encoding="utf-8"))
     assert plan["far"] and any("遠景が決まっていないので" in n for n in plan["notes"])
+    # The top view holds what the place holds, as it stands in the scene (the van where it was moved to).
+    top = json.loads((tmp_path / "俯瞰図" / "panel1.json").read_text(encoding="utf-8"))
+    outlines = {o["name"]: o for o in top["place"]["outlines"]}
+    assert outlines["site_ground"]["ground"] and not outlines["VAN"]["ground"]
+    assert "D_Aunt" not in outlines and "Sign_board" not in outlines
+    assert (tmp_path / "blockout" / "panel1" / "2" / "俯瞰図.svg").exists()
     bpy.ops.wm.open_mainfile(filepath=str(tmp_path / "blockout" / "panel1" / "2" / "scene.blend"))
     names = {o.name for o in bpy.data.objects}
     assert (
@@ -396,6 +419,11 @@ def test_develop_in_a_place(tmp_path):
         and not [o for o in bpy.data.objects if o.type == "LIGHT" and not o.name.startswith("NB_")]
     )
     van = bpy.data.objects["VAN"]
+    from mathutils import Vector
+
+    corners = [van.matrix_world @ Vector(c) for c in van.bound_box]
+    van_x, van_y = ([q[i] for q in outlines["VAN"]["footprintM"]] for i in range(2))
+    assert abs(min(van_x) - min(c.x for c in corners)) < 0.06 and abs(max(van_y) - max(c.y for c in corners)) < 0.06
     assert tuple(round(v, 3) for v in van.location) == (8.4, -18.7, 1.0) and abs(van.rotation_euler.z - 1.5708) < 1e-3
     assert bpy.data.objects["Roof"]["nb_place_materials"] == ["瓦"] and bpy.data.objects["Tree_leaves"].get("nb_foliage")
     # Left out of the .blend's renders: not in the place (unless shown); a dark paint is ベタ; panels outline only.

@@ -103,7 +103,7 @@ def verify(plan: dict, measured: dict) -> dict:
             add(f"物「{obj['label']}」", None, IOU_TOL, False, note="測れませんでした")
             continue
         iou = box_iou(box, target)
-        strict = "asset" not in obj and not obj.get("fixedSize")
+        strict = "asset" not in obj and not obj.get("fixedSize") and not obj.get("fixedPlace")
         add(
             f"物「{obj['label']}」の範囲",
             round(iou, 4),
@@ -112,7 +112,11 @@ def verify(plan: dict, measured: dict) -> dict:
             measuredPx=[round(v, 1) for v in box],
             targetPx=[round(v, 1) for v in target],
             unit="IoU",
-            **({} if strict else {"note": "大きさか素材が決まっているので参考"}),
+            **(
+                {}
+                if strict
+                else {"note": "俯瞰図の位置に置いたので参考" if obj.get("fixedPlace") else "大きさか素材が決まっているので参考"}
+            ),
         )
 
     for fig in plan.get("figures", []):

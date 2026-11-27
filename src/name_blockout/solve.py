@@ -146,6 +146,25 @@ def fit_box(
     )
 
 
+def place_box(camera: Camera, target, position, size, along: str = "X", floor: float = 0.0) -> Placed:
+    """A box of `size` standing at `position` ([x, y] on the floor, or [x, y, z]): as placed on the top view. How well
+    it fills `target` (the range marked on the panel) is measured, not fitted."""
+    centre = (float(position[0]), float(position[1]), float(position[2]) if len(position) > 2 else floor)
+    box = projected_box(camera, box_corners(centre, size, along))
+    longer = camera.longer
+    residual = math.sqrt(sum(((a - b) / longer) ** 2 for a, b in zip(box, target)) / 4) * longer if box else float("inf")
+    return Placed(
+        centre=centre,
+        size=tuple(size),
+        along=along,
+        box_px=box,
+        target_px=tuple(target),
+        residual_px=residual,
+        iou=box_iou(box, target) if box else 0.0,
+        note="俯瞰図の位置" if box else "俯瞰図の位置（カメラの後ろ）",
+    )
+
+
 def fit_figure(camera: Camera, target, height_m: float = DEFAULT_FIGURE_M, floor: float = 0.0) -> Placed:
     """A person of `height_m` whose feet stand where the marked range ends (its head where it begins, if the camera height agrees)."""
     x0, y0, x1, y1 = target

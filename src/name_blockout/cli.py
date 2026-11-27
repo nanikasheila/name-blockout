@@ -5,11 +5,15 @@
   check     <指示.json> [--questions N]     要求の点検: what is missing or contradicts, and the next questions
   camera    <指示.json> [--shot ID]         the camera each ruler gives (and how it compares with the name tool's)
   plan      <指示.json> --shot ID           the Blockout plan as data (no Blender)
+  top       <指示.json> [--shot ID …]       俯瞰図: the layout from straight above, to scale (俯瞰図/<コマ>.svg and .json;
+                                          no Blender, but a place's contents are read with it when it is there)
   answer    <指示.json> --shot ID --set path=value …   answer a question (要求/<ID>.json)
   confirm   <指示.json> --shot ID           confirm the requirement (a new version when it changed)
   scope     <指示.json> --shot ID           what a rebuild would redo (design / develop / none)
   blockout  <指示.json> [--shot ID …]       build, check in numbers and draw the Blockout (needs Blender)
   develop   <指示.json> [--shot ID …]       the development: the same layout with light and materials (needs Blender)
+  critique  <指示.json> --shot ID [--reference 絵]   講評: the take beside its reference, the numbers and the request
+                                          for a critic who did not build it (needs Blender); --answer records the answer
   materials                               the material library (3D and how a manga draws it)
 
 Commands print JSON with --json; otherwise words for people.
@@ -165,6 +169,52 @@ def cmd_plan(a) -> int:
     return 0
 
 
+def cmd_top(a) -> int:
+    from .checks import check_shot, is_buildable
+    from .plan import build_develop_plan
+    from .requirement import current, effective, read_requirement
+    from .top import top_words, write_top
+
+    data = read_instruction(a.instruction)
+    folder = _folder(a, data)
+    base = instruction_dir(Path(a.instruction).resolve())
+    jobs = []
+    for raw in data["shots"]:
+        if a.shot and raw["id"] not in a.shot:
+            continue
+        if (raw.get("intent") or {}).get("none"):
+            continue
+        version = current(read_requirement(folder, raw["id"]))
+        shot, _ = effective(raw, (version or {}).get("answers", {}))
+        if not is_buildable(check_shot(data, shot, base), shot["id"]) and not a.force:
+            print(f"{shot.get('label', shot['id'])}: 点検でエラーがあるので描きません（--force で描く）", file=sys.stderr)
+            continue
+        develop = shot.get("stage") == "develop"
+        jobs.append((build_develop_plan if develop else build_plan)(data, shot, Path(a.instruction).resolve(), None))
+    if any(plan.get("place") for plan in jobs) and not _has_bpy() and not a.no_place:
+        # A place's contents are in its .blend: read them inside Blender when there is one.
+        if a.blender or find_blender():
+            return _in_blender(a) or 0
+    out = []
+    for plan in jobs:
+        outlines = None
+        if plan.get("place") and _has_bpy() and not a.no_place:
+            from .blender import measure as bmeasure
+            from .blender import scene as bscene
+
+            bscene.reset()
+            outlines = bmeasure.footprints([o for o in bscene.add_place(plan["place"]).all_objects if o.type == "MESH"])
+        written = write_top(folder, plan, outlines)
+        out.append({"shot": plan["shot"], "label": plan["label"], "svg": written["svg"], "json": written["json"], "top": written["top"]})
+        if not a.json:
+            print(f"{plan['label']}: {written['svg']}")
+            for line in top_words(written["top"]):
+                print(f"  {line}")
+    if a.json:
+        _print(out, True)
+    return 0 if out else 1
+
+
 def _folder(a, data) -> Path:
     from .pipeline import background_folder
 
@@ -212,17 +262,73 @@ def cmd_scope(a) -> int:
     return 0
 
 
+def _in_blender(a) -> int | None:
+    """Run the same command inside Blender when this Python has no bpy; its exit code, or None when bpy is here."""
+    if _has_bpy():
+        return None
+    blender = a.blender or find_blender()
+    if not blender:
+        print("Blender が見つかりません（--blender か NAME_BLOCKOUT_BLENDER で場所を指定）", file=sys.stderr)
+        return 2
+    run = Path(__file__).resolve().parent / "blender" / "run.py"
+    argv = [blender, "-b", "--factory-startup", "--python", str(run), "--"] + a.raw
+    child = subprocess.Popen(argv)
+    full_speed(child)
+    return child.wait()
+
+
+def cmd_critique(a) -> int:
+    from .critique import MAX_ROUNDS, CritiqueError, make_pack, record_answer
+
+    data = read_instruction(a.instruction)
+    shot = find_shot(data, a.shot)
+    folder = _folder(a, data)
+    label = shot.get("label", shot["id"])
+    try:
+        if a.answer:
+            got = record_answer(folder, shot["id"], Path(a.answer))
+            words = [f"{label}: {got['round']} 回目の講評（案{got['take']}）、問題 {len(got['problems'])} 個"]
+            for i, p in enumerate(got["problems"], 1):
+                fix = p["fix"]
+                before = f"{fix['from']:g} → " if isinstance(fix.get("from"), (int, float)) else ""
+                words.append(f"  {i}. {p['where']}: {p['what']}（{fix['what']} {before}{fix['to']:g} {fix['unit']}）")
+            words.append(
+                {
+                    "done": "直すところなし。講評はここまで。",
+                    "fix": f"直して描き直したら、もう一度 critique（あと {got['roundsLeft']} 回）。",
+                    "author": f"{MAX_ROUNDS} 回目なので、直したら作者に見せます。",
+                }[got["next"]]
+            )
+            _print(got, a.json, "\n".join(words))
+            return 0
+        code = _in_blender(a)
+        if code is not None:
+            return code
+        from .blender.picture import load, save
+
+        pack = make_pack(folder, shot, load, save, take=a.take, reference=Path(a.reference) if a.reference else None, more=a.more)
+    except CritiqueError as error:
+        print(str(error), file=sys.stderr)
+        return 1
+    density = pack["numbers"]["density"]
+    words = [f"{label}: 案{pack['take']} の講評の依頼（{pack['round']} 回目）を {pack['folder']} に作りました"]
+    if density.get("reference"):
+        ratio = density["ratios"]["dark"]
+        words.append(
+            f"  黒（線とベタ）の割合: 今の絵 {density['take']['dark'] * 100:.1f}%・参考 {density['reference']['dark'] * 100:.1f}%"
+            + (f"（{ratio:g} 倍）" if ratio is not None else "")
+        )
+        for f in density["tooEmpty"]:
+            words.append(f"  ! {f['where']}: 参考の {f['ratio']:g} 倍しか黒がない（{density['failUnder']} 未満）")
+    words.append("  依頼.md を、この絵を作っていない講評役に渡してください。答えは critique --answer 講評.json で記録します。")
+    _print(pack, a.json, "\n".join(words))
+    return 0
+
+
 def cmd_blockout(a) -> int:
-    if not _has_bpy():
-        blender = a.blender or find_blender()
-        if not blender:
-            print("Blender が見つかりません（--blender か NAME_BLOCKOUT_BLENDER で場所を指定）", file=sys.stderr)
-            return 2
-        run = Path(__file__).resolve().parent / "blender" / "run.py"
-        argv = [blender, "-b", "--factory-startup", "--python", str(run), "--"] + a.raw
-        child = subprocess.Popen(argv)
-        full_speed(child)
-        return child.wait()
+    code = _in_blender(a)
+    if code is not None:
+        return code
     from .pipeline import run_blockout
 
     reports = run_blockout(
@@ -264,6 +370,12 @@ def parser() -> argparse.ArgumentParser:
     c.add_argument("--shot", required=True)
     c.add_argument("--dpi", type=float)
     c.add_argument("--out")
+    c = command("top", cmd_top, "俯瞰図: 配置を真上から、寸法つきで（3D を組む前に確かめる）")
+    c.add_argument("--shot", action="append", help="このコマだけ（何度でも）")
+    c.add_argument("--folder", help="作業フォルダー（既定: 指示書から）")
+    c.add_argument("--force", action="store_true", help="点検のエラーがあっても描く")
+    c.add_argument("--no-place", action="store_true", help="場所（.blend）の中身を読まない（Blender を使わない）")
+    c.add_argument("--blender", help="Blender の場所")
     for name, func, help_ in (
         ("answer", cmd_answer, "質問に答える"),
         ("confirm", cmd_confirm, "要求を確定する"),
@@ -288,6 +400,14 @@ def parser() -> argparse.ArgumentParser:
         c.add_argument("--only-changed", action="store_true", help="前に組んだときから変わったコマだけ")
         c.add_argument("--no-render", action="store_true", help="組んで照合するだけ（描き出さない）")
         c.add_argument("--blender", help="Blender の場所")
+    c = command("critique", cmd_critique, "講評: 作っていない講評役に渡す絵・数字・依頼を作る（Blender）／答えを記録する")
+    c.add_argument("--shot", required=True)
+    c.add_argument("--folder", help="作業フォルダー（既定: 指示書から）")
+    c.add_argument("--take", help="講評する案の番号（既定: いちばん新しい開発の案）")
+    c.add_argument("--reference", help="参考の絵（同じコマを、作者が目安にしている出来で描いた絵）")
+    c.add_argument("--answer", help="講評役の答え（講評.json）を記録する")
+    c.add_argument("--more", action="store_true", help="3 回を超えて講評を続ける（作者が続けると言ったとき）")
+    c.add_argument("--blender", help="Blender の場所")
     m = sub.add_parser("materials", help="材質のライブラリ（3D と漫画での描き方の組）")
     m.add_argument("--json", action="store_true")
     m.set_defaults(func=cmd_materials)

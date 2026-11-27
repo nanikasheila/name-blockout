@@ -255,6 +255,13 @@
               "asset": { "description": "素材の名前（なければ名前の頭が素材の名前と同じもの）。", "type": "string" },
               "shapeMm": { "$ref": "#/$defs/polygon" },
               "sizeM": { "description": "大きさ [幅 X, 奥行 Y, 高さ Z]。素材がなければ箱の大きさに使う。", "$ref": "#/$defs/vec3" },
+              "positionM": {
+                "description": "俯瞰図で決めた置き場所 [x, y]（底のまん中、場の座標 m。3 つ目があれば底の高さ）。書けば、画面の中の範囲から解かずにここへ置く（範囲との重なりは参考として出す）。",
+                "type": "array",
+                "items": { "type": "number" },
+                "minItems": 2,
+                "maxItems": 3
+              },
               "axis": { "description": "物の辺が向かう消失点（1 か 2）。なければ場の線と同じ（1）。", "enum": [1, 2] },
               "facing": { "description": "向きの言葉（横向き・正面・斜め・ドアをこちら に など）。", "type": "string" },
               "show": { "description": "見せたい面（開いたドア・正面の看板 など）。", "type": "string" },
