@@ -17,8 +17,11 @@ import bpy
 from mathutils import Matrix, Vector
 
 from ..far import BANDS, TONE_LIFT
+from ..lines import W_MIN_MM
 from ..materials import CELL_WORDS, DEFAULT, FINE_WORDS, FOLIAGE, NATURAL_WORDS, guess_part, natural_parts
-from ..town import beyond, rect
+from ..town import FOOTING_M as TOWN_FOOTING_M
+from ..town import HEDGE_THICK_M, WALL_THICK_M, beyond, rect
+from ..town import STOREY_M as TOWN_STOREY_M
 
 PREFIX = "NB_"
 #: Which light the tones take (from above, in front, a little left of the camera's usual view).
@@ -331,7 +334,7 @@ def add_trees(layer: dict, coll, material):
     for t in layer["trees"]:
         h, r = t["heightM"], t["radiusM"]
         x, y, z = t["centreM"]
-        trunk = h * (0.18 if t.get("form") == "conifer" else 0.3)
+        trunk = h * {"conifer": 0.18, "bush": 0.05}.get(t.get("form"), 0.3)
         stem = bmesh.ops.create_cone(bm, cap_ends=True, segments=6, radius1=r * 0.1, radius2=r * 0.08, depth=trunk)
         bmesh.ops.translate(bm, vec=(x, y, z + trunk / 2), verts=stem["verts"])
         before = set(bm.faces)
@@ -413,14 +416,14 @@ def add_far(far: list[dict]) -> dict:
     return out
 
 
-#: The materials a town's houses are made of (the library's names: materials.py), as their mesh's slots.
-TOWN_SLOTS = ("白壁", "コンクリート", "木", "瓦", "トタン", "ガラス")
-#: A town house: its eaves' overhang, a storey's height, the footing below the ground floor, and a window's depth
-#: before its wall.
+#: The materials a town's things are made of (the library's names: materials.py), as their meshes' slots.
+TOWN_SLOTS = ("白壁", "コンクリート", "木", "瓦", "トタン", "ガラス", "金属", "黒い塗装")
+#: A town house: its eaves' overhang, and a window's depth before its wall.
 TOWN_EAVE_M = 0.5
-TOWN_STOREY_M = 2.8
-TOWN_FOOTING_M = 0.4
 TOWN_WINDOW_OUT_M = 0.04
+#: A lower roof (下屋) rises this much for each metre it runs up to the upper storey's wall, to this at most.
+TOWN_LOWER_PITCH = 0.4
+TOWN_LOWER_RISE_M = 0.9
 
 
 def standing_points(objects, most: int = 3000) -> list[tuple[float, float]]:
@@ -483,91 +486,359 @@ def ground_height(place):
     return at
 
 
+def _frame(centre, front: str = "-Y"):
+    """A thing's own frame (x across its front, y from its front to its back, z up from its foot) into the world's:
+    its front (its own −Y) turned to `front`, a quarter turn at a time."""
+    cx, cy, cz = centre
+    (ax, ay), (bx, by) = {"-Y": ((1, 0), (0, 1)), "+X": ((0, 1), (-1, 0)), "+Y": ((-1, 0), (0, -1)), "-X": ((0, -1), (1, 0))}[front]
+    return lambda x, y, z: (cx + x * ax + y * bx, cy + x * ay + y * by, cz + z)
+
+
 def _solid(bm, lo, hi, slot: int, to_world) -> None:
-    """A box from corner `lo` to corner `hi` (in a house's own frame), its faces outward."""
+    """A box from corner `lo` to corner `hi` (in a thing's own frame)."""
     (x0, y0, z0), (x1, y1, z1) = lo, hi
     v = [bm.verts.new(to_world(x, y, z)) for z in (z0, z1) for y in (y0, y1) for x in (x0, x1)]
     for a, b, c, d in ((0, 2, 3, 1), (4, 5, 7, 6), (0, 1, 5, 4), (2, 6, 7, 3), (0, 4, 6, 2), (1, 3, 7, 5)):
         bm.faces.new((v[a], v[b], v[c], v[d])).material_index = slot
 
 
+def _hull(bm, points, faces, slot: int, to_world) -> None:
+    """A closed shape from its corners (in a thing's own frame) and its faces (each the numbers of its corners)."""
+    v = [bm.verts.new(to_world(*q)) for q in points]
+    for face in faces:
+        bm.faces.new([v[i] for i in face]).material_index = slot
+
+
+def _town_roof(bm, kind: str, along_x: bool, centre, half, z0: float, rise: float, slot: int, to_world) -> None:
+    """A gable (切妻) or hipped (寄棟) roof over the rectangle `half` (x, y) each way from `centre`, its eaves at z0
+    and its ridge `rise` above them, along x or along y."""
+    (ox, oy), (a, b) = centre, half
+    if not along_x:
+        a, b = b, a
+
+    def p(u: float, v: float, z: float):
+        return (ox + u, oy + v, z) if along_x else (ox + v, oy + u, z)
+
+    top = z0 + rise
+    if kind == "hip":
+        r = max(a - b, 0.3)  # a square house's roof comes almost to a point (方形)
+        points = [p(-a, -b, z0), p(a, -b, z0), p(a, b, z0), p(-a, b, z0), p(-r, 0.0, top), p(r, 0.0, top)]
+        faces = ((0, 1, 2, 3), (0, 1, 5, 4), (2, 3, 4, 5), (1, 2, 5), (3, 0, 4))
+    else:
+        points = [p(-a, -b, z0), p(-a, b, z0), p(-a, 0.0, top), p(a, -b, z0), p(a, b, z0), p(a, 0.0, top)]
+        faces = ((0, 2, 1), (3, 4, 5), (0, 1, 4, 3), (1, 2, 5, 4), (2, 0, 3, 5))
+    _hull(bm, points, faces, slot, to_world)
+
+
+def _town_windows(bm, slot: int, to_world):
+    """A function setting a window on a wall of a box (`box`: its centre's x and y, its width and depth): `face` is
+    front, back, left or right, `at` along the wall from its middle. A wide one is a sliding window (引き違い): two
+    panes with the frame's upright between them."""
+    out = TOWN_WINDOW_OUT_M
+
+    def window(box, face: str, at: float, wide: float, z0: float, z1: float, slot: int = slot) -> None:
+        ox, oy, bw, bd = box
+        panes = [(at - wide / 2, at + wide / 2)] if wide < 1.3 else [(at - wide / 2, at - 0.03), (at + 0.03, at + wide / 2)]
+        for p0, p1 in panes:
+            if face == "front":
+                _solid(bm, (ox + p0, oy - bd / 2 - out, z0), (ox + p1, oy - bd / 2, z1), slot, to_world)
+            elif face == "back":
+                _solid(bm, (ox + p0, oy + bd / 2, z0), (ox + p1, oy + bd / 2 + out, z1), slot, to_world)
+            elif face == "left":
+                _solid(bm, (ox - bw / 2 - out, oy + p0, z0), (ox - bw / 2, oy + p1, z1), slot, to_world)
+            else:
+                _solid(bm, (ox + bw / 2, oy + p0, z0), (ox + bw / 2 + out, oy + p1, z1), slot, to_world)
+
+    return window
+
+
 def _town_house(bm, house: dict) -> None:
-    """One house of a town (town.py) into `bm`: walls, a gable or flat roof, windows on every side, a door and
-    sometimes a balcony: enough to read as a house from across the street, and no more (it stands in the middle
-    distance, told by its tones)."""
-    (cx, cy, cz), (w, d, h) = house["centreM"], house["sizeM"]
-    # The front (the house's own −Y) turned to its street: a quarter turn at a time.
-    (ax, ay), (bx, by) = {"-Y": ((1, 0), (0, 1)), "+X": ((0, 1), (-1, 0)), "+Y": ((-1, 0), (0, -1)), "-X": ((0, -1), (1, 0))}[
-        house["front"]
-    ]
-
-    def to_world(x, y, z):
-        return (cx + x * ax + y * bx, cy + x * ay + y * by, cz + z)
-
-    wall, top, glass, wood = (TOWN_SLOTS.index(house["wall"]), TOWN_SLOTS.index(house["top"]), TOWN_SLOTS.index("ガラス"), 2)
+    """One house of a town (town.py) into `bm`, as a Japanese house reads from across the street and from above:
+    walls on a footing; a gable, hipped or flat roof with eaves; where the upper storey stands on a part of the
+    ground floor, lower roofs (下屋) over the rest; wide sliding windows to the front (to the floor on the ground
+    floor, a shutter box over each), few and small ones to the sides; a door under a porch roof, with its step; a
+    balcony before the upper storey; an air conditioner's outdoor unit by a side wall."""
+    to_world = _frame(house["centreM"], house["front"])
+    w, d, h = house["sizeM"]
+    wall, top, glass, wood, concrete, metal = (
+        TOWN_SLOTS.index(n) for n in (house["wall"], house["top"], "ガラス", "木", "コンクリート", "金属")
+    )
     floors = house["floors"]
     flat = house["roof"] == "flat"
-    eaves = h - 0.3 if flat else min(h - 0.8, floors * TOWN_STOREY_M + TOWN_FOOTING_M)
-    storey = (eaves - TOWN_FOOTING_M) / floors
-    _solid(bm, (-w / 2, -d / 2, 0.0), (w / 2, d / 2, eaves), wall, to_world)
+    eaves = h - 0.3 if flat else TOWN_FOOTING_M + floors * TOWN_STOREY_M
+    z0, z1 = TOWN_FOOTING_M, TOWN_FOOTING_M + TOWN_STOREY_M
+    e = TOWN_EAVE_M
+    rng = random.Random(house["seed"])
+    window = _town_windows(bm, glass, to_world)
+    ground = (0.0, 0.0, w, d)
+    upper = house.get("upper") if floors == 2 else None
+    if upper:
+        uw, ud = upper["sizeM"]
+        ox, oy = upper["side"] * (w - uw) / 2, (d - ud) / 2  # at the ground floor's back, to one side
+        top_box = (ox, oy, uw, ud)
+        _solid(bm, (-w / 2, -d / 2, 0.0), (w / 2, d / 2, z1), wall, to_world)
+        _solid(bm, (ox - uw / 2, oy - ud / 2, z1), (ox + uw / 2, oy + ud / 2, eaves), wall, to_world)
+        wedge = ((0, 1, 3, 2), (0, 1, 5, 4), (2, 3, 5, 4), (0, 2, 4), (1, 3, 5))
+        # The lower roof beside the upper storey: from the ground floor's eaves up to the upper storey's wall.
+        s = -upper["side"]
+        outer, inner = s * (w / 2 + e), ox + s * uw / 2
+        run = abs(outer - inner)
+        if run > e + 0.3:
+            z2 = z1 + min(TOWN_LOWER_RISE_M, run * TOWN_LOWER_PITCH)
+            y0, y1 = -d / 2 - e, d / 2 + e
+            points = [(outer, y0, z1), (outer, y1, z1), (inner, y0, z1), (inner, y1, z1), (inner, y0, z2), (inner, y1, z2)]
+            _hull(bm, points, wedge, top, to_world)
+        # …and before it.
+        outer, inner = -d / 2 - e, oy - ud / 2
+        run = inner - outer
+        if run > e + 0.3:
+            z2 = z1 + min(TOWN_LOWER_RISE_M, run * TOWN_LOWER_PITCH)
+            x0, x1 = max(-w / 2 - e, ox - uw / 2 - e), min(w / 2 + e, ox + uw / 2 + e)
+            points = [(x0, outer, z1), (x1, outer, z1), (x0, inner, z1), (x1, inner, z1), (x0, inner, z2), (x1, inner, z2)]
+            _hull(bm, points, wedge, top, to_world)
+    else:
+        top_box = ground
+        _solid(bm, (-w / 2, -d / 2, 0.0), (w / 2, d / 2, eaves), wall, to_world)
+    ox, oy, bw, bd = top_box
     if flat:
         _solid(bm, (-w / 2 - 0.25, -d / 2 - 0.25, eaves), (w / 2 + 0.25, d / 2 + 0.25, h), top, to_world)
     else:
-        a, b = w / 2 + TOWN_EAVE_M, d / 2 + TOWN_EAVE_M
-        # The ridge along the house's front, or from its front to its back.
-        if house["ridge"] == "along":
-            pts = ((-a, -b, eaves), (-a, b, eaves), (-a, 0.0, h), (a, -b, eaves), (a, b, eaves), (a, 0.0, h))
-        else:
-            pts = ((a, -b, eaves), (-a, -b, eaves), (0.0, -b, h), (a, b, eaves), (-a, b, eaves), (0.0, b, h))
-        a0, a1, a2, b0, b1, b2 = (bm.verts.new(to_world(*q)) for q in pts)
-        for face in ((a0, a2, a1), (b0, b1, b2), (a0, a1, b1, b0), (a1, a2, b2, b1), (a2, a0, b0, b2)):
-            bm.faces.new(face).material_index = top
-    rng = random.Random(house["seed"])
-    out = TOWN_WINDOW_OUT_M
-    for f in range(floors):
-        z0 = TOWN_FOOTING_M + f * storey
-        for face, along in (("front", w), ("back", w), ("left", d), ("right", d)):
-            across_x = face in ("front", "back")
-            win_w = 1.6 if across_x else 1.1
-            n = max(1, int(along / (3.2 if across_x else 3.6)))
-            pitch = along / n
+        _town_roof(bm, house["roof"], house["ridge"] == "along", (ox, oy), (bw / 2 + e, bd / 2 + e), eaves, h - eaves, top, to_world)
+
+    # The ground floor's front: the door under its porch roof, on its step; windows to the floor, a shutter box over each.
+    door = house.get("doorM", 0.0)
+    _solid(bm, (door - 0.45, -d / 2 - TOWN_WINDOW_OUT_M, z0), (door + 0.45, -d / 2, z0 + 2.0), wood, to_world)
+    _solid(bm, (door - 0.8, -d / 2 - 0.9, z0 + 2.2), (door + 0.8, -d / 2, z0 + 2.3), metal, to_world)
+    _solid(bm, (door - 0.7, -d / 2 - 0.7, 0.0), (door + 0.7, -d / 2, z0), concrete, to_world)
+    n = max(1, int(w // 2.6))
+    for i in range(n):
+        at = -w / 2 + (i + 0.5) * w / n
+        if abs(at - door) < 1.5 or rng.random() < 0.2:
+            continue
+        window(ground, "front", at, 1.7, z0 + 0.05, z0 + 2.05)
+        _solid(bm, (at - 0.9, -d / 2 - 0.1, z0 + 2.07), (at + 0.9, -d / 2, z0 + 2.3), metal, to_world)
+
+    def storey(box, level: float, front: bool) -> None:
+        """A storey's windows to the back and the sides (and, with `front`, sill-high ones to the front)."""
+        _, _, bw, bd = box
+        for face in ("front", "back") if front else ("back",):
+            n = max(1, int(bw // 3.2))
             for i in range(n):
-                u = -along / 2 + pitch * (i + 0.5)
-                door = face == "front" and f == 0 and i == n - 1
-                tall = face == "front" and f == 0 and not door
-                if not door and rng.random() < 0.12:
-                    continue  # a blank stretch of wall
-                half = 0.45 if door else win_w / 2
-                lo_z, hi_z = (z0, z0 + 2.0) if door else ((z0 + 0.3, z0 + 2.1) if tall else (z0 + 0.9, z0 + 2.1))
-                hi_z = min(hi_z, z0 + storey - 0.25)
-                slot = wood if door else glass
-                if face == "front":
-                    _solid(bm, (u - half, -d / 2 - out, lo_z), (u + half, -d / 2, hi_z), slot, to_world)
+                at = -bw / 2 + (i + 0.5) * bw / n
+                if face == "front" and balcony and abs(ox + at - balcony["atM"]) < balcony["wM"] / 2 + 0.9:
+                    continue
+                if rng.random() < 0.75:
+                    window(box, face, at, 1.7, level + 0.9, level + 2.0)
                 elif face == "back":
-                    _solid(bm, (u - half, d / 2, lo_z), (u + half, d / 2 + out, hi_z), slot, to_world)
-                elif face == "left":
-                    _solid(bm, (-w / 2 - out, u - half, lo_z), (-w / 2, u + half, hi_z), slot, to_world)
-                else:
-                    _solid(bm, (w / 2, u - half, lo_z), (w / 2 + out, u + half, hi_z), slot, to_world)
-    if house.get("balcony") and floors > 1:
-        x0 = -w / 2 + 0.3
-        z = TOWN_FOOTING_M + storey - 0.1
-        _solid(bm, (x0, -d / 2 - 0.9, z), (x0 + min(3.6, w * 0.5), -d / 2, z + 1.1), wall, to_world)
+                    window(box, face, at, 0.6, level + 1.4, level + 2.0)
+        for face in ("left", "right"):
+            if rng.random() < 0.6:
+                window(box, face, rng.uniform(-bd / 4, bd / 4), 0.7, level + 1.0, level + 1.9)
+
+    balcony = house.get("balcony") if floors == 2 else None
+    storey(ground, z0, front=False)
+    if floors == 2:
+        storey(top_box, z1, front=True)
+    if balcony:
+        # A balcony before the upper storey: its floor, its three low walls (open above), the window behind it.
+        at, across, front = balcony["atM"], balcony["wM"], oy - bd / 2
+        window(top_box, "front", at - ox, 1.7, z1 + 0.05, z1 + 2.0)
+        x0, x1, out = at - across / 2, at + across / 2, front - 1.0
+        _solid(bm, (x0, out, z1 - 0.12), (x1, front, z1), wall, to_world)
+        _solid(bm, (x0, out, z1), (x1, out + 0.08, z1 + 1.05), wall, to_world)
+        _solid(bm, (x0, out + 0.08, z1), (x0 + 0.08, front, z1 + 1.05), wall, to_world)
+        _solid(bm, (x1 - 0.08, out + 0.08, z1), (x1, front, z1 + 1.05), wall, to_world)
+    if rng.random() < 0.6:
+        s = rng.choice((-1, 1))
+        y = rng.uniform(-d / 4, d / 4)
+        _solid(
+            bm, (min(s * w / 2, s * (w / 2 + 0.32)), y - 0.4, 0.05), (max(s * w / 2, s * (w / 2 + 0.32)), y + 0.4, 0.65), metal, to_world
+        )
 
 
-def add_surroundings(made: dict, points, camera_at, grounds=(), level: float = 0.0, height=None) -> tuple[list, dict]:
+def _town_flats(bm, house: dict) -> None:
+    """A block of flats of a town into `bm`: a flat-roofed block; along its front a balcony on every upper floor
+    (a low wall, a partition between each two flats) and each flat's window to the floor; along its back the open
+    corridor with each flat's door, and the stairs at one end; a penthouse for the stairs on the roof."""
+    to_world = _frame(house["centreM"], house["front"])
+    w, d, h = house["sizeM"]
+    wall, glass, wood, concrete = (TOWN_SLOTS.index(n) for n in (house["wall"], "ガラス", "木", "コンクリート"))
+    floors, units = house["floors"], house["units"]
+    roof = TOWN_FOOTING_M + floors * TOWN_STOREY_M
+    window = _town_windows(bm, glass, to_world)
+    box = (0.0, 0.0, w, d)
+    _solid(bm, (-w / 2, -d / 2, 0.0), (w / 2, d / 2, roof), wall, to_world)
+    _solid(bm, (-w / 2 - 0.1, -d / 2 - 0.1, roof), (w / 2 + 0.1, d / 2 + 0.1, h), concrete, to_world)
+    s = house.get("stairs", 1)
+    _solid(bm, (min(s * w / 2, s * (w / 2 - 2.6)), d / 2 - 2.6, h), (max(s * w / 2, s * (w / 2 - 2.6)), d / 2, h + 2.3), wall, to_world)
+    _solid(bm, (min(s * w / 2, s * (w / 2 - 2.4)), d / 2, 0.0), (max(s * w / 2, s * (w / 2 - 2.4)), d / 2 + 1.25, roof), wall, to_world)
+    each = w / units
+    for f in range(floors):
+        z = TOWN_FOOTING_M + f * TOWN_STOREY_M
+        for k in range(units):
+            at = -w / 2 + (k + 0.5) * each
+            window(box, "front", at - each * 0.2, 1.7, z + 0.05, z + 2.0)
+            if each > 4.6:
+                window(box, "front", at + each * 0.25, 0.9, z + 0.9, z + 2.0)
+            _solid(bm, (at - 0.42, d / 2, z), (at + 0.42, d / 2 + TOWN_WINDOW_OUT_M, z + 2.0), wood, to_world)
+            window(box, "back", at + 1.1, 0.6, z + 1.2, z + 2.0)
+        if f == 0:
+            continue
+        front, back = -d / 2, d / 2
+        _solid(bm, (-w / 2 + 0.1, front - 1.1, z - 0.12), (w / 2 - 0.1, front, z), concrete, to_world)
+        _solid(bm, (-w / 2 + 0.1, front - 1.1, z), (w / 2 - 0.1, front - 1.02, z + 1.1), wall, to_world)
+        for k in range(units + 1):
+            at = min(max(-w / 2 + k * each, -w / 2 + 0.13), w / 2 - 0.13)
+            _solid(bm, (at - 0.03, front - 1.02, z), (at + 0.03, front, z + (1.1 if k in (0, units) else 1.8)), wall, to_world)
+        _solid(bm, (-w / 2, back, z - 0.12), (w / 2, back + 1.25, z), concrete, to_world)
+        _solid(bm, (-w / 2, back + 1.17, z), (w / 2, back + 1.25, z + 1.1), wall, to_world)
+
+
+def _town_car(bm, car: dict) -> None:
+    """A parked car of a town into `bm` (its nose to its front): a body, a cabin with a band of glass round it,
+    four wheels. Enough to read as a car in the middle distance."""
+    to_world = _frame(car["centreM"], car["front"])
+    w, long, h = car["sizeM"]
+    paint, glass, tyre = (TOWN_SLOTS.index(n) for n in (car["paint"], "ガラス", "黒い塗装"))
+    hood, tail = {"kei": (0.55, 0.05), "compact": (0.9, 0.15), "minivan": (0.8, 0.05), "sedan": (1.2, 0.9)}[car["kind"]]
+    belt = 0.2 + (h - 0.2) * 0.5  # the body's top: the windows' sill
+    _solid(bm, (-w / 2, -long / 2, 0.2), (w / 2, long / 2, belt), paint, to_world)
+    c0, c1 = -long / 2 + hood, long / 2 - tail
+    _solid(bm, (-w / 2 + 0.06, c0, belt), (w / 2 - 0.06, c1, h), paint, to_world)
+    g0, g1 = belt + 0.05, h - 0.12
+    _solid(bm, (-w / 2 + 0.14, c0 - 0.02, g0), (w / 2 - 0.14, c0, g1), glass, to_world)
+    _solid(bm, (-w / 2 + 0.14, c1, g0), (w / 2 - 0.14, c1 + 0.02, g1), glass, to_world)
+    for sx in (-1, 1):
+        x0, x1 = sorted((sx * (w / 2 - 0.06), sx * (w / 2 - 0.04)))
+        _solid(bm, (x0, c0 + 0.15, g0), (x1, c1 - 0.15, g1), glass, to_world)
+        for y in (-long / 2 + 0.75, long / 2 - 0.7):
+            x0, x1 = sorted((sx * (w / 2 - 0.2), sx * (w / 2 + 0.01)))
+            _solid(bm, (x0, y - 0.28, 0.0), (x1, y + 0.28, 0.5), tyre, to_world)
+
+
+def _town_wall(bm, item: dict, thick: float, slot: int = 0) -> None:
+    """A boundary wall of a town into `bm`: from one end to the other along one of the world's axes, `thick`."""
+    (x0, y0), (x1, y1) = item["fromM"], item["toM"]
+    z, t = item.get("baseM", 0.0), thick / 2
+    lo = (min(x0, x1) - (t if abs(x1 - x0) < abs(y1 - y0) else 0.0), min(y0, y1) - (t if abs(x1 - x0) >= abs(y1 - y0) else 0.0), z)
+    hi = (
+        max(x0, x1) + (t if abs(x1 - x0) < abs(y1 - y0) else 0.0),
+        max(y0, y1) + (t if abs(x1 - x0) >= abs(y1 - y0) else 0.0),
+        z + item["heightM"],
+    )
+    _solid(bm, lo, hi, slot, lambda x, y, z: (x, y, z))
+
+
+def _town_hedge(bm, item: dict, thick: float, rng: random.Random) -> None:
+    """A hedge of a town into `bm`: a row of trimmed lumps from one end to the other (a natural thing: told by its
+    shade, so no two lumps alike)."""
+    (x0, y0), (x1, y1) = item["fromM"], item["toM"]
+    z, high = item.get("baseM", 0.0), item["heightM"]
+    long = math.hypot(x1 - x0, y1 - y0)
+    n = max(1, round(long / 1.1))
+    along_x = abs(x1 - x0) >= abs(y1 - y0)
+    for i in range(n):
+        t = (i + 0.5) / n
+        half = (long / n * 0.62, thick / 2 * rng.uniform(0.9, 1.15))
+        size = Vector((half[0] if along_x else half[1], half[1] if along_x else half[0], high / 2 * rng.uniform(0.92, 1.08)))
+        centre = Vector((x0 + (x1 - x0) * t, y0 + (y1 - y0) * t, z + size.z * 0.96))
+        ball = bmesh.ops.create_icosphere(bm, subdivisions=1, radius=1.0)
+        for v in ball["verts"]:
+            lump = 1.0 + rng.uniform(-0.08, 0.08)
+            v.co = centre + Vector((v.co.x * size.x, v.co.y * size.y, v.co.z * size.z)) * lump
+
+
+def _town_pole(bm, pole: dict) -> None:
+    """A utility pole of a town into `bm`: its two cross-arms (across its street), now and then a transformer, a
+    street lamp on an arm out over the street."""
+    x, y, z = pole["centreM"]
+    h = pole["heightM"]
+    sx, sy = pole.get("streetward") or (0.0, -1.0)
+    stem = bmesh.ops.create_cone(bm, cap_ends=True, segments=8, radius1=0.16, radius2=0.12, depth=h)
+    bmesh.ops.translate(bm, vec=(x, y, z + h / 2), verts=stem["verts"])
+    for width, at in ((1.8, 0.955), (1.2, 0.84)):
+        arm = bmesh.ops.create_cube(bm, size=1.0)
+        bmesh.ops.scale(bm, vec=(0.08 + (width - 0.08) * abs(sx), 0.08 + (width - 0.08) * abs(sy), 0.08), verts=arm["verts"])
+        bmesh.ops.translate(bm, vec=(x, y, z + h * at), verts=arm["verts"])
+    if pole.get("transformer"):
+        can = bmesh.ops.create_cone(bm, cap_ends=True, segments=10, radius1=0.27, radius2=0.27, depth=0.8)
+        bmesh.ops.translate(bm, vec=(x - sy * 0.42, y + sx * 0.42, z + h * 0.74), verts=can["verts"])
+    if pole.get("lamp"):
+        arm = bmesh.ops.create_cube(bm, size=1.0)
+        bmesh.ops.scale(bm, vec=(0.06 + 1.34 * abs(sx), 0.06 + 1.34 * abs(sy), 0.06), verts=arm["verts"])
+        bmesh.ops.translate(bm, vec=(x + sx * 0.7, y + sy * 0.7, z + h * 0.55), verts=arm["verts"])
+        head = bmesh.ops.create_cube(bm, size=1.0)
+        bmesh.ops.scale(bm, vec=(0.2 + 0.3 * abs(sx), 0.2 + 0.3 * abs(sy), 0.1), verts=head["verts"])
+        bmesh.ops.translate(bm, vec=(x + sx * 1.45, y + sy * 1.45, z + h * 0.55 - 0.05), verts=head["verts"])
+
+
+#: The wires from one pole to the next: how far across from the pole (m, toward its street), how high up it (a
+#: share of its height), how much it sags in the middle (m), its own radius (m). Two of the high-voltage wires on
+#: the top arm, a low-voltage one on the second, a telephone cable below (a pole carries more: each is drawn as
+#: wide as a pen's finest line, and more of them would run together into a band).
+TOWN_WIRES = (
+    (-0.75, 0.955, 0.45, 0.008),
+    (0.75, 0.955, 0.45, 0.008),
+    (0.5, 0.84, 0.5, 0.01),
+    (-0.2, 0.6, 0.75, 0.02),
+)
+WIRE_STEPS = 8
+
+
+def _town_wire(bm, a: dict, b: dict, camera_at, hair: float) -> None:
+    """The wires between two poles into `bm`: each a sagging line, as thick as it is, and no thinner than a pen's
+    finest line where it is (`hair`: that line's width in metres for each metre from the camera), so a wire is a
+    whole line however far off, never a row of dots."""
+    sx, sy = a.get("streetward") or (0.0, -1.0)
+    eye = Vector(camera_at)
+    for across, share, sag, radius in TOWN_WIRES:
+        rings = []
+        for k in range(WIRE_STEPS + 1):
+            t = k / WIRE_STEPS
+            p = Vector(
+                (
+                    a["centreM"][0] + (b["centreM"][0] - a["centreM"][0]) * t + sx * across,
+                    a["centreM"][1] + (b["centreM"][1] - a["centreM"][1]) * t + sy * across,
+                    (a["centreM"][2] + a["heightM"] * share) * (1 - t)
+                    + (b["centreM"][2] + b["heightM"] * share) * t
+                    - sag * 4 * t * (1 - t),
+                )
+            )
+            r = max(radius, hair * (p - eye).length / 2)
+            rings.append([bm.verts.new(p + Vector(q) * r) for q in ((sx, sy, 0), (0, 0, 1), (-sx, -sy, 0), (0, 0, -1))])
+        for r0, r1 in zip(rings, rings[1:]):
+            for i in range(4):
+                bm.faces.new((r0[i], r0[(i + 1) % 4], r1[(i + 1) % 4], r1[i]))
+        bm.faces.new(rings[0])
+        bm.faces.new(rings[-1])
+
+
+def hair_width(plan: dict) -> float:
+    """How wide a pen's finest line (lines.W_MIN_MM on the page) is in the scene, in metres for each metre from the
+    camera."""
+    c = plan["camera"]
+    pixel = c.get("sensorMm", 36.0) / (c["lensMm"] * max(plan["render"]["sizePx"]))
+    return W_MIN_MM * plan["render"].get("dpi", 300) / 25.4 * pixel
+
+
+def add_surroundings(made: dict, points, camera_at, grounds=(), level: float = 0.0, height=None, hair: float = 0.0) -> tuple[list, dict]:
     """A town round the place (plan's surroundings, town.py): what of it stands beyond the place's things (`points`:
-    standing_points) from the camera and off the place's `grounds` (ground_rects), as three meshes in the middle
-    band: the houses (TOWN_SLOTS as its material slots), the utility poles, and the garden trees (natural things:
-    told by their shade). Each stands on the place's ground where it has some under it (`height`: ground_height;
-    a house on the lowest of what its corners stand on), else at the height `level` (ground_level). Returns the
-    meshes and the town as kept."""
+    standing_points) from the camera and off the place's `grounds` (ground_rects), as meshes in the middle band:
+    the houses and flats, the boundary walls and gateposts, the parked cars, the utility poles and their wires
+    (`hair`: see _town_wire), and the garden trees and hedges (natural things: told by their shade). Each stands
+    on the place's ground where it has some under it (`height`: ground_height; a house on the lowest of what its
+    corners stand on), else at the height `level` (ground_level). Returns the meshes and the town as kept."""
     kept = beyond(made, points, (camera_at[0], camera_at[1]), grounds=grounds) if points or grounds else made
 
-    def stand(item: dict, corners) -> dict:
+    def lowest(corners) -> float:
         found = [height(x, y) if height else None for x, y in corners]
-        z = min(level if v is None else v for v in found)
-        return {**item, "centreM": [item["centreM"][0], item["centreM"][1], round(z, 3)]}
+        return round(min(level if v is None else v for v in found), 3)
+
+    def stand(item: dict, corners) -> dict:
+        return {**item, "centreM": [item["centreM"][0], item["centreM"][1], lowest(corners)]}
+
+    def base(item: dict) -> dict:
+        return {**item, "baseM": lowest((item["fromM"], item["toM"]))}
 
     kept = {
         **kept,
@@ -575,39 +846,70 @@ def add_surroundings(made: dict, points, camera_at, grounds=(), level: float = 0
         "houses": [stand(h, [*rect(h), h["centreM"][:2]]) for h in kept["houses"]],
         "trees": [stand(t, [t["centreM"][:2]]) for t in kept["trees"]],
         "poles": [stand(q, [q["centreM"][:2]]) for q in kept["poles"]],
+        "posts": [stand(q, [q["centreM"][:2]]) for q in kept.get("posts") or []],
+        "cars": [stand(q, [q["centreM"][:2]]) for q in kept.get("cars") or []],
+        "walls": [base(w) for w in kept.get("walls") or []],
+        "hedges": [base(w) for w in kept.get("hedges") or []],
     }
     coll = band_collection("middle")
     material = tone_material("proxy_middle", lift=TONE_LIFT["middle"])
     out = []
+
+    def made_of(name: str, bm, slots) -> None:
+        bmesh.ops.recalc_face_normals(bm, faces=bm.faces)
+        obj = _mesh_object(PREFIX + name, bm, coll, material)
+        for _ in slots[1:]:
+            obj.data.materials.append(material)
+        obj["nb_place_materials"] = list(slots)
+        out.append(obj)
+
     if kept["houses"]:
         bm = bmesh.new()
         for house in kept["houses"]:
-            _town_house(bm, house)
-        obj = _mesh_object(PREFIX + "town_houses", bm, coll, material)
-        for _ in TOWN_SLOTS[1:]:
-            obj.data.materials.append(material)
-        obj["nb_place_materials"] = list(TOWN_SLOTS)
-        out.append(obj)
+            (_town_flats if house.get("kind") == "flats" else _town_house)(bm, house)
+        made_of("town_houses", bm, TOWN_SLOTS)
+    if kept["walls"] or kept["posts"]:
+        bm = bmesh.new()
+        for wall in kept["walls"]:
+            _town_wall(bm, wall, WALL_THICK_M)
+        for post in kept["posts"]:
+            (x, y, z), (w, d, h) = post["centreM"], post["sizeM"]
+            _solid(bm, (x - w / 2, y - d / 2, z), (x + w / 2, y + d / 2, z + h), 0, lambda x, y, z: (x, y, z))
+        made_of("town_walls", bm, ("コンクリート",))
+    if kept["cars"]:
+        bm = bmesh.new()
+        for car in kept["cars"]:
+            _town_car(bm, car)
+        made_of("town_cars", bm, TOWN_SLOTS)
     if kept["poles"]:
         bm = bmesh.new()
         for pole in kept["poles"]:
-            x, y, z = pole["centreM"]
-            h = pole["heightM"]
-            stem = bmesh.ops.create_cone(bm, cap_ends=True, segments=8, radius1=0.16, radius2=0.12, depth=h)
-            bmesh.ops.translate(bm, vec=(x, y, z + h / 2), verts=stem["verts"])
-            for width, at in ((1.6, 0.92), (1.2, 0.84)):
-                arm = bmesh.ops.create_cube(bm, size=1.0)
-                bmesh.ops.scale(bm, vec=(width, 0.08, 0.08), verts=arm["verts"])
-                bmesh.ops.translate(bm, vec=(x, y, z + h * at), verts=arm["verts"])
-        bmesh.ops.recalc_face_normals(bm, faces=bm.faces)
-        obj = _mesh_object(PREFIX + "town_poles", bm, coll, material)
-        obj["nb_place_materials"] = ["コンクリート"]
-        out.append(obj)
+            _town_pole(bm, pole)
+        made_of("town_poles", bm, ("コンクリート",))
+    poles = {p["id"]: p for p in kept["poles"] if "id" in p}
+    spans = [w for w in kept.get("wires") or [] if all(i in poles for i in w["poles"])]
+    if spans:
+        bm = bmesh.new()
+        for wire in spans:
+            _town_wire(bm, poles[wire["poles"][0]], poles[wire["poles"][1]], camera_at, hair)
+        made_of("town_wires", bm, ("黒い塗装",))
+        # A wire's shadow is a hair on the ground: not drawn.
+        out[-1].visible_shadow = False
+        out[-1]["nb_noshadow"] = True
+        out[-1]["nb_hairline"] = True
     if kept["trees"]:
         obj = add_trees({"trees": kept["trees"]}, coll, material)
         obj.name = PREFIX + "town_trees"
         obj["nb_place_materials"] = ["草"]
         out.append(obj)
+    if kept["hedges"]:
+        bm = bmesh.new()
+        rng = random.Random(kept.get("seed", 0))
+        for hedge in kept["hedges"]:
+            _town_hedge(bm, hedge, HEDGE_THICK_M, rng)
+        made_of("town_hedges", bm, ("草",))
+        mark_foliage(out[-1])
+        out[-1]["nb_natural"] = True
     for obj in out:
         obj["nb_band"] = "middle"
         obj["nb_label"] = "市街地"
@@ -1098,6 +1400,7 @@ def build(plan: dict) -> dict:
             ground_rects(measured["place"]),
             ground_level(measured["place"]),
             ground_height(measured["place"]),
+            hair=hair_width(plan),
         )
     bpy.context.view_layer.update()
     return measured
