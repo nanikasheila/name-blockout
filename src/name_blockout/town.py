@@ -532,7 +532,8 @@ def beyond(made: dict, points, origin, gap: float | None = None, grounds=()) -> 
       of it (a yard behind a wall is the place's, though it lies beyond the wall).
     - Nothing stands on the place's own lots (`grounds`: its grounds, each as x0, y0, x1, y1; one longer than
       LOT_MAX_M is land the town may stand on).
-    - What stands on a house's plot goes with the house (`of`), and a wire with its two poles.
+    - What stands on a house's plot goes with the house (`of`), and a wire with its two poles. With its house
+      kept, it stands wherever it is off the place's lots and outside the outline (a wall's thickness off it).
 
     Where the camera looks past the place (across the street from it), the town comes as near as it was laid.
     `dropped` counts what was left out."""
@@ -541,12 +542,13 @@ def beyond(made: dict, points, origin, gap: float | None = None, grounds=()) -> 
     hull = outline(points)
     grounds = [g for g in grounds if max(g[2] - g[0], g[3] - g[1]) <= LOT_MAX_M]
 
-    def past(x: float, y: float) -> bool:
-        if any(
+    def on_lot(x: float, y: float) -> bool:
+        return any(
             x0 - GROUND_CLEAR_M < x < x1 + GROUND_CLEAR_M and y0 - GROUND_CLEAR_M < y < y1 + GROUND_CLEAR_M for x0, y0, x1, y1 in grounds
-        ):
-            return False
-        if off_outline(hull, x, y) <= OUTLINE_CLEAR_M:
+        )
+
+    def past(x: float, y: float) -> bool:
+        if on_lot(x, y) or off_outline(hull, x, y) <= OUTLINE_CLEAR_M:
             return False
         starts = _starts(far, hull, x, y, origin)
         return starts == 0.0 or math.hypot(x - origin[0], y - origin[1]) > starts + gap
@@ -562,15 +564,24 @@ def beyond(made: dict, points, origin, gap: float | None = None, grounds=()) -> 
         (x0, y0), _, (x1, y1), _ = rect(house, OUTLINE_CLEAR_M)
         return not any(x0 < x < x1 and y0 < y < y1 for x, y in hull)
 
+    houses = [h for h in made["houses"] if clear(h)]
+    kept = {h["id"] for h in houses}
+    gone = {h["id"] for h in made["houses"]} - kept
+
+    def stands(item: dict, x: float, y: float) -> bool:
+        # What stands on a kept house's plot stands with the house, up to the place's outline: a neighbour's wall
+        # runs along the place's kerb, though the kerb reaches as far as the wall does.
+        return on_plot(x, y) if item.get("of") in kept else past(x, y)
+
+    def on_plot(x: float, y: float) -> bool:
+        return not on_lot(x, y) and off_outline(hull, x, y) > WALL_THICK_M
+
     def along(item: dict) -> bool:
         (x0, y0), (x1, y1) = item["fromM"], item["toM"]
-        return all(past(x, y) for x, y in ((x0, y0), (x1, y1), ((x0 + x1) / 2, (y0 + y1) / 2)))
-
-    houses = [h for h in made["houses"] if clear(h)]
-    gone = {h["id"] for h in made["houses"]} - {h["id"] for h in houses}
+        return all(stands(item, x, y) for x, y in ((x0, y0), (x1, y1), ((x0 + x1) / 2, (y0 + y1) / 2)))
 
     def standing(kind: str) -> list[dict]:
-        return [t for t in made.get(kind) or [] if t.get("of") not in gone and past(t["centreM"][0], t["centreM"][1])]
+        return [t for t in made.get(kind) or [] if t.get("of") not in gone and stands(t, t["centreM"][0], t["centreM"][1])]
 
     trees, poles = standing("trees"), standing("poles")
     left = {p["id"] for p in poles if "id" in p}

@@ -22,6 +22,7 @@ from name_blockout.town import (
     OUTLINE_CLEAR_M,
     REACH_M,
     STREET_M,
+    WALL_THICK_M,
     WIRE_REACH_M,
     beyond,
     off_outline,
@@ -152,9 +153,9 @@ def test_the_town_is_a_japanese_residential_quarter():
     assert len(kept["wires"]) < len(made["wires"]) and all(set(w["poles"]) <= left for w in kept["wires"])
     hull = outline(place)
     for wall in kept["walls"] + kept["hedges"]:
-        assert off_outline(hull, *wall["fromM"]) > OUTLINE_CLEAR_M and off_outline(hull, *wall["toM"]) > OUTLINE_CLEAR_M
+        assert off_outline(hull, *wall["fromM"]) > WALL_THICK_M and off_outline(hull, *wall["toM"]) > WALL_THICK_M
     for car in kept["cars"]:
-        assert off_outline(hull, *car["centreM"][:2]) > OUTLINE_CLEAR_M
+        assert off_outline(hull, *car["centreM"][:2]) > WALL_THICK_M
 
 
 def test_a_street_runs_where_the_place_s_road_does_and_along_either_axis():
@@ -285,6 +286,20 @@ def test_across_the_street_from_the_place_the_town_comes_near_and_a_plot_s_thing
         assert all(item["of"] is None or item["of"] in there for item in kept[kind]), kind
         assert any(item["of"] in gone for item in made[kind]), kind
     assert any(car["of"] is None for car in made["cars"])
+    # The place's kerb runs along the street's near edge too, as far as the neighbours' walls do: a kept house
+    # keeps its walls, gateposts and car, a wall's thickness off the kerb (not a street's width beyond it).
+    kerb = [(float(x), -19.3) for x in range(-30, 61, 5)]
+    lined = beyond(made, place + kerb, origin)
+    edge = outline(place + kerb)
+    near = [h for h in lined["houses"] if -34.0 < h["centreM"][1] < -19.5 and -30.0 < h["centreM"][0] < 60.0]
+    assert near
+    for house in near:
+        for kind in ("walls", "hedges", "posts", "cars", "trees"):
+            mine = [item for item in made[kind] if item["of"] == house["id"]]
+            assert [item for item in lined[kind] if item["of"] == house["id"]] == mine, (house["id"], kind)
+    assert any(-19.7 < w["fromM"][1] < -19.4 and w["of"] in {h["id"] for h in near} for w in lined["walls"])
+    for wall in lined["walls"]:
+        assert off_outline(edge, *wall["fromM"]) > WALL_THICK_M and off_outline(edge, *wall["toM"]) > WALL_THICK_M
 
 
 def test_the_plan_lays_the_town_clear_of_the_author_s_things_and_the_top_view_shows_it():
