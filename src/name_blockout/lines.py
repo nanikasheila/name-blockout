@@ -44,6 +44,12 @@ from .far import FAR_M, NEAR_M
 W_MAX_MM = 0.5
 W_MIN_MM = 0.15
 W_DROP_MM = 0.1
+#: A thing's line is no wider than this share of the thing's own width where it is drawn (a wire, an aerial's ring:
+#: thinner than the line its depth asks for), and no thinner than the finest.
+THIN_SHARE = 0.5
+#: A piece of line shorter than this (mm on the page) and joined to no other is a fragment (one lump of a crown
+#: just showing before another, a boundary flickering round what is drawn): not a line.
+FRAGMENT_MM = 1.0
 #: Two faces fold if their normals differ by more than this.
 FOLD_MIN_DEG = 30.0
 #: The foreground's distance and the deepest boundaries' are kept within these (m): nearer, a boundary is as deep
@@ -60,7 +66,8 @@ FADE_FROM = 1.0
 FADE_POWER = 2.0
 #: Where one surface stands before another by more than this share of its distance, it is a thing's outline (not a
 #: curved surface's own turn): it counts at least as a fold in the foreground, up to OUTLINE_REACH foregrounds off
-#: (as far as a floor's joints are drawn: an outline matters more than a joint), then less with distance.
+#: (as far as a floor's joints are drawn: an outline matters more than a joint), then less with distance. So does
+#: the edge of a soft thing (a bush on the ground: no fold, hardly a gap) against what is not soft.
 OUTLINE_GAP = 0.01
 OUTLINE_REACH = 4.0
 #: The tones take over from the lines (tone_floor) from this many foregrounds off, evenly with distance.
@@ -170,6 +177,13 @@ def boundary_depths(
     depth = np.minimum(1.0, gap * deepest) * line_fade(z, thing, d_ref)
     # A thing's outline, however shallow: at least the finest line, up to OUTLINE_REACH foregrounds off.
     outline = thing & (gap * np.maximum(z, 1e-3) > OUTLINE_GAP)
+    if soft is not None:
+        # A soft thing (a crown, a bush) has no folds to end it: where it meets what is not soft (the ground it
+        # sits on, the wall behind it, the sky) is its outline, unless that other surface stands before it.
+        bush = thing & soft
+        for dy, dx in _SHIFTS:
+            other = _shift(q, dy, dx)
+            outline |= bush & ~_shift(bush, dy, dx) & ((other - q) * np.maximum(z, 1e-3) <= OUTLINE_GAP)
     depth = np.maximum(depth, np.where(outline, FOLD_DEPTH * np.minimum(1.0, q * d_ref * OUTLINE_REACH), 0.0))
     if normal is not None:
         cos_min = math.cos(math.radians(FOLD_MIN_DEG))
@@ -198,6 +212,64 @@ def widths(depth: np.ndarray, px_per_mm: float) -> np.ndarray:
     none where the depth asks for under W_DROP_MM."""
     mm = W_MAX_MM * np.power(depth, GAMMA, dtype=np.float32)
     return np.where(mm >= W_DROP_MM, np.maximum(mm, W_MIN_MM) * px_per_mm, 0.0).astype(np.float32)
+
+
+def thickness(z: np.ndarray, thing: np.ndarray, reach: int) -> np.ndarray:
+    """How many pixels wide the surface at each pixel is, across the rows or down the columns (the narrower), counted
+    up to `reach` each way (2 × reach + 1: that wide or wider). One surface runs on while its distance changes by
+    under D_REF_GAP from pixel to pixel; a thing going off the picture's edge is taken to go on."""
+    q = np.where(thing, 1.0 / np.maximum(z, 1e-3), 0.0).astype(np.float32)
+    best = np.full(q.shape, np.inf, dtype=np.float32)
+    for dy, dx in ((0, 1), (1, 0)):
+        run = np.ones(q.shape, dtype=np.float32)
+        for sy, sx in ((dy, dx), (-dy, -dx)):
+            other = _shift(q, sy, sx)
+            link = thing & _shift(thing, sy, sx) & (np.abs(q - other) <= D_REF_GAP * np.maximum(q, other))
+            alive = link
+            for k in range(1, reach + 1):
+                run += alive
+                if k < reach:
+                    alive = alive & _shift(link, sy * k, sx * k)
+        best = np.minimum(best, run)
+    return best
+
+
+def no_wider_than_the_thing(width: np.ndarray, z: np.ndarray, thing: np.ndarray, finest: float) -> np.ndarray:
+    """The widths, each no more than THIN_SHARE of its thing's own width there (and no less than `finest`, the
+    finest line in pixels): a wire or an aerial's ring is not drawn thicker than it is."""
+    top = float(width.max()) if width.size else 0.0
+    if top <= finest:
+        return width
+    wide = thickness(z, thing, int(math.ceil(top / THIN_SHARE)))
+    return np.where(width > 0, np.minimum(width, np.maximum(finest, THIN_SHARE * wide)), 0.0).astype(np.float32)
+
+
+def fragments(mask: np.ndarray, under: int) -> np.ndarray:
+    """Where `mask`'s pieces (pixels joined side to side or corner to corner) have fewer than `under` pixels."""
+    h, w = mask.shape
+    if under <= 1 or not mask.any():
+        return np.zeros((h, w), dtype=bool)
+    label = np.where(mask, np.arange(1, h * w + 1, dtype=np.int32).reshape(h, w), 0)
+
+    def round_it(a: np.ndarray, pick) -> np.ndarray:
+        rows = a.copy()
+        pick(rows[:, 1:], a[:, :-1], out=rows[:, 1:])
+        pick(rows[:, :-1], a[:, 1:], out=rows[:, :-1])
+        both = rows.copy()
+        pick(both[1:], rows[:-1], out=both[1:])
+        pick(both[:-1], rows[1:], out=both[:-1])
+        return both
+
+    # Each pixel takes the largest number within `under` steps along its piece: a piece smaller than that ends up
+    # with one number all over; a larger one is still changing somewhere, and is no fragment whatever its counts.
+    for _ in range(under):
+        label = np.where(mask, round_it(label, np.maximum), 0)
+    lowest = round_it(np.where(mask, label, np.iinfo(np.int32).max), np.minimum)
+    unsettled = mask & ((round_it(label, np.maximum) != label) | (lowest != label))
+    still = np.zeros(h * w + 2, dtype=bool)
+    still[label[unsettled]] = True
+    counts = np.bincount(label.ravel(), minlength=h * w + 2)
+    return mask & (counts[label] < under) & ~still[label]
 
 
 def stroke(width: np.ndarray) -> np.ndarray:
@@ -259,6 +331,8 @@ def boundary_lines(
     if flat is not None:
         depth[flat] = 0.0
     width = widths(depth, px_per_mm * by)
+    width = no_wider_than_the_thing(width, z, thing, W_MIN_MM * px_per_mm * by)
+    width[fragments(width > 0, int(round(FRAGMENT_MM * px_per_mm * by)))] = 0.0
     drawn = stroke(width)
     info = {
         "foregroundM": round(d_ref, 2),

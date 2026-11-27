@@ -2,6 +2,7 @@
 """The development's lines: as thick as their boundary is deep."""
 
 import numpy as np
+from pytest import approx
 
 from name_blockout.lines import (
     FADE_FROM,
@@ -15,7 +16,10 @@ from name_blockout.lines import (
     W_MIN_MM,
     boundary_depths,
     boundary_lines,
+    fragments,
+    no_wider_than_the_thing,
     stroke,
+    thickness,
     tone_floor,
     widths,
 )
@@ -66,13 +70,13 @@ def test_a_floor_running_away_is_no_boundary_and_the_sky_is_the_deepest():
 
 
 def test_far_things_get_almost_no_line():
-    h, w = 40, 80
+    h, w = 60, 100
     z = np.full((h, w), 1.0, dtype=np.float32)
     thing = np.zeros((h, w), dtype=bool)
     thing[10:30, 10:30] = True
     z[10:30, 10:30] = 200.0  # a tree 200 m off against the sky
-    thing[10:30, 50:70] = True
-    z[10:30, 50:70] = 5.0  # a thing 5 m off
+    thing[10:50, 50:90] = True
+    z[10:50, 50:90] = 5.0  # a thing 5 m off
     ink, info = boundary_lines(z, thing, None, None, 600 / 25.4, d_ref=5.0, deepest=5.0)
     assert ink[10, 20] == 0.0 and ink[10, 60] == 1.0
     assert info["bands"]["middle"] == 0.0 and info["bands"]["near"] > 0.1
@@ -115,6 +119,72 @@ def test_a_small_thing_s_outline_is_closed_however_shallow():
     # A surface turning away a little (under 1 % of its distance from pixel to pixel) is no outline.
     z[20:40, 20:40] = 39.8
     assert boundary_depths(z, thing, None, None, d_ref=35.0, deepest=100.0)[0].max() < FOLD_DEPTH / 2
+
+
+def test_a_bush_on_the_ground_has_its_outline_though_nothing_is_behind_it():
+    """A bush (soft: no folds) sitting on the ground: the ground round it is as far as the bush is, so there is no
+    gap to tell it by; where it meets the ground is its outline all the same, on the bush's side."""
+    h, w = 60, 60
+    z = np.full((h, w), 40.0, dtype=np.float32)
+    thing = np.ones((h, w), dtype=bool)
+    soft = np.zeros((h, w), dtype=bool)
+    soft[20:40, 20:40] = True
+    z[20:40, 20:40] = 39.9  # a quarter of 1 % nearer
+    normal = np.zeros((h, w, 3), dtype=np.float32)
+    normal[..., 2] = 1.0
+    depth, *_ = boundary_depths(z, thing, normal, soft, d_ref=35.0, deepest=100.0)
+    rim = [depth[20, 30], depth[39, 30], depth[30, 20], depth[30, 39]]
+    assert all(abs(d - FOLD_DEPTH) < 1e-4 for d in rim)
+    assert depth[19, 30] == 0.0 and depth[30, 30] == 0.0  # not on the ground's side, not inside
+    # A post before the bush: the edge is the post's (its own outline), not the bush's.
+    z[:, 28:32] = 30.0
+    soft[:, 28:32] = False
+    depth, *_ = boundary_depths(z, thing, normal, soft, d_ref=35.0, deepest=100.0)
+    assert depth[30, 27] == 0.0 and depth[30, 32] == 0.0 and depth[30, 28] > 0.0 and depth[30, 31] > 0.0
+    # Without the soft pass nothing tells the bush from the ground.
+    z[:, 28:32] = 40.0
+    z[20:40, 20:40] = 39.9
+    assert boundary_depths(z, thing, normal, None, d_ref=35.0, deepest=100.0)[0].max() < FOLD_DEPTH / 2
+
+
+def test_a_thing_thinner_than_its_line_is_drawn_with_the_finest():
+    """A wire 3 pixels wide before the sky, in the foreground: its boundary is as deep as any, but a line 0.5 mm
+    wide on each side would make it three times as thick as it is. It gets the finest line; a wide thing beside it
+    keeps its own."""
+    h, w = 80, 120
+    px = 600 / 25.4
+    z = np.full((h, w), 1.0, dtype=np.float32)
+    thing = np.zeros((h, w), dtype=bool)
+    thing[5:75, 20:23] = True  # the wire
+    thing[5:75, 50:110] = True  # a wall
+    z[thing] = 5.0
+    width = widths(boundary_depths(z, thing, None, None, d_ref=5.0, deepest=5.0)[0], px)
+    assert width[40, 20] == approx(W_MAX_MM * px) and width[40, 50] == approx(W_MAX_MM * px)
+    capped = no_wider_than_the_thing(width, z, thing, W_MIN_MM * px)
+    assert capped[40, 20] == approx(W_MIN_MM * px) and capped[40, 22] == approx(W_MIN_MM * px)
+    assert capped[40, 50] == approx(W_MAX_MM * px) and capped[5, 80] == approx(W_MAX_MM * px)
+    assert thickness(z, thing, 10)[40, 21] == 3 and thickness(z, thing, 10)[40, 80] == 21
+    ink, _ = boundary_lines(z, thing, None, None, px, d_ref=5.0, deepest=5.0)
+    assert ink[40, 14:29].sum() < 8  # the wire and its lines: about 3 + 3.5 pixels, not 3 + 12
+
+
+def test_a_short_piece_of_line_joined_to_nothing_is_dropped():
+    mask = np.zeros((60, 80), dtype=bool)
+    mask[10, 5:70] = True  # a line
+    mask[11:16, 40] = True  # a short branch joined to it
+    mask[30, 10:15] = True  # a dash alone
+    mask[31, 15] = True  # … joined at a corner: one piece of 6
+    mask[40:52, 60] = True  # a piece of 12
+    gone = fragments(mask, 12)
+    assert gone[30, 10:15].all() and gone[31, 15] and gone.sum() == 6
+    assert fragments(mask, 13).sum() == 18 and not fragments(mask, 1).any()
+    # In a picture: a bit 0.2 mm across standing before the rest (one lump of a crown just showing) leaves no ink.
+    z = np.full((60, 80), 30.0, dtype=np.float32)
+    thing = np.ones((60, 80), dtype=bool)
+    z[20:24, 30:34] = 25.0
+    assert widths(boundary_depths(z, thing, None, None, d_ref=25.0, deepest=30.0)[0], 600 / 25.4).max() > 0
+    ink, _ = boundary_lines(z, thing, None, None, 600 / 25.4, d_ref=25.0, deepest=30.0)
+    assert ink.max() == 0.0
 
 
 def test_the_far_band_s_layers_get_no_lines_and_are_not_the_foreground():
