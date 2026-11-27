@@ -17,7 +17,8 @@ import bpy
 from mathutils import Matrix, Vector
 
 from ..far import BANDS, TONE_LIFT
-from ..materials import CELL_WORDS, DEFAULT, FINE_WORDS, FOLIAGE, guess_part
+from ..materials import CELL_WORDS, DEFAULT, FINE_WORDS, FOLIAGE, NATURAL_WORDS, guess_part
+from ..town import beyond
 
 PREFIX = "NB_"
 #: Which light the tones take (from above, in front, a little left of the camera's usual view).
@@ -356,6 +357,7 @@ def add_trees(layer: dict, coll, material):
     marks = [f in crown_faces for f in bm.faces]
     obj = _mesh_object(PREFIX + "trees", bm, coll, material)
     mark_foliage(obj, marks)
+    obj["nb_natural"] = True
     return obj
 
 
@@ -409,6 +411,169 @@ def add_far(far: list[dict]) -> dict:
         elif kind == "trees":
             add_trees(layer, coll, material)
     return out
+
+
+#: The materials a town's houses are made of (the library's names: materials.py), as their mesh's slots.
+TOWN_SLOTS = ("白壁", "コンクリート", "木", "瓦", "トタン", "ガラス")
+#: A town house: its eaves' overhang, a storey's height, the footing below the ground floor, and a window's depth
+#: before its wall.
+TOWN_EAVE_M = 0.5
+TOWN_STOREY_M = 2.8
+TOWN_FOOTING_M = 0.4
+TOWN_WINDOW_OUT_M = 0.04
+
+
+def standing_points(objects, most: int = 3000) -> list[tuple[float, float]]:
+    """Where a place's things stand, from above (x, y of their corners, thinned to `most` a mesh): all but its
+    grounds (a lot, a lawn, a terrace)."""
+    out = []
+    for o in objects:
+        if o.type != "MESH" or o.get("nb_ground") or not len(o.data.vertices):
+            continue
+        m = o.matrix_world
+        verts = o.data.vertices
+        for i in range(0, len(verts), max(1, len(verts) // most)):
+            q = m @ verts[i].co
+            out.append((q.x, q.y))
+    return out
+
+
+def ground_rects(objects) -> list[tuple[float, float, float, float]]:
+    """A place's own grounds (a lot, a lawn, a terrace) from above: each as x0, y0, x1, y1 along the world's axes."""
+    out = []
+    for o in objects:
+        if o.type != "MESH" or not o.get("nb_ground"):
+            continue
+        corners = [o.matrix_world @ Vector(c) for c in o.bound_box]
+        out.append((min(q.x for q in corners), min(q.y for q in corners), max(q.x for q in corners), max(q.y for q in corners)))
+    return out
+
+
+#: How far under a place's lowest surface the ground round it lies (m): on the same plane as a floor of the place
+#: the two would shade each other black.
+GROUND_BELOW_PLACE_M = 0.05
+
+
+def ground_level(place) -> float:
+    """The height of the ground round a place (its meshes): just under its lowest surface, never above 0; 0 with no
+    place. The light's ground lies there (develop.py), and what stands round the place stands on it."""
+    lows = [min((o.matrix_world @ Vector(c)).z for c in o.bound_box) for o in place]
+    return min(0.0, min(lows) - GROUND_BELOW_PLACE_M) if lows else 0.0
+
+
+def _solid(bm, lo, hi, slot: int, to_world) -> None:
+    """A box from corner `lo` to corner `hi` (in a house's own frame), its faces outward."""
+    (x0, y0, z0), (x1, y1, z1) = lo, hi
+    v = [bm.verts.new(to_world(x, y, z)) for z in (z0, z1) for y in (y0, y1) for x in (x0, x1)]
+    for a, b, c, d in ((0, 2, 3, 1), (4, 5, 7, 6), (0, 1, 5, 4), (2, 6, 7, 3), (0, 4, 6, 2), (1, 3, 7, 5)):
+        bm.faces.new((v[a], v[b], v[c], v[d])).material_index = slot
+
+
+def _town_house(bm, house: dict) -> None:
+    """One house of a town (town.py) into `bm`: walls, a gable or flat roof, windows on every side, a door and
+    sometimes a balcony: enough to read as a house from across the street, and no more (it stands in the middle
+    distance, told by its tones)."""
+    (cx, cy, cz), (w, d, h) = house["centreM"], house["sizeM"]
+    turn = 1.0 if house["front"] == "-Y" else -1.0  # the front (the house's own −Y) to its street
+
+    def to_world(x, y, z):
+        return (cx + x * turn, cy + y * turn, cz + z)
+
+    wall, top, glass, wood = (TOWN_SLOTS.index(house["wall"]), TOWN_SLOTS.index(house["top"]), TOWN_SLOTS.index("ガラス"), 2)
+    floors = house["floors"]
+    flat = house["roof"] == "flat"
+    eaves = h - 0.3 if flat else min(h - 0.8, floors * TOWN_STOREY_M + TOWN_FOOTING_M)
+    storey = (eaves - TOWN_FOOTING_M) / floors
+    _solid(bm, (-w / 2, -d / 2, 0.0), (w / 2, d / 2, eaves), wall, to_world)
+    if flat:
+        _solid(bm, (-w / 2 - 0.25, -d / 2 - 0.25, eaves), (w / 2 + 0.25, d / 2 + 0.25, h), top, to_world)
+    else:
+        a, b = w / 2 + TOWN_EAVE_M, d / 2 + TOWN_EAVE_M
+        # The ridge along the world's X or Y (turning the house half round keeps it there).
+        if house["ridge"] == "X":
+            pts = ((-a, -b, eaves), (-a, b, eaves), (-a, 0.0, h), (a, -b, eaves), (a, b, eaves), (a, 0.0, h))
+        else:
+            pts = ((a, -b, eaves), (-a, -b, eaves), (0.0, -b, h), (a, b, eaves), (-a, b, eaves), (0.0, b, h))
+        a0, a1, a2, b0, b1, b2 = (bm.verts.new(to_world(*q)) for q in pts)
+        for face in ((a0, a2, a1), (b0, b1, b2), (a0, a1, b1, b0), (a1, a2, b2, b1), (a2, a0, b0, b2)):
+            bm.faces.new(face).material_index = top
+    rng = random.Random(house["seed"])
+    out = TOWN_WINDOW_OUT_M
+    for f in range(floors):
+        z0 = TOWN_FOOTING_M + f * storey
+        for face, along in (("front", w), ("back", w), ("left", d), ("right", d)):
+            across_x = face in ("front", "back")
+            win_w = 1.6 if across_x else 1.1
+            n = max(1, int(along / (3.2 if across_x else 3.6)))
+            pitch = along / n
+            for i in range(n):
+                u = -along / 2 + pitch * (i + 0.5)
+                door = face == "front" and f == 0 and i == n - 1
+                tall = face == "front" and f == 0 and not door
+                if not door and rng.random() < 0.12:
+                    continue  # a blank stretch of wall
+                half = 0.45 if door else win_w / 2
+                lo_z, hi_z = (z0, z0 + 2.0) if door else ((z0 + 0.3, z0 + 2.1) if tall else (z0 + 0.9, z0 + 2.1))
+                hi_z = min(hi_z, z0 + storey - 0.25)
+                slot = wood if door else glass
+                if face == "front":
+                    _solid(bm, (u - half, -d / 2 - out, lo_z), (u + half, -d / 2, hi_z), slot, to_world)
+                elif face == "back":
+                    _solid(bm, (u - half, d / 2, lo_z), (u + half, d / 2 + out, hi_z), slot, to_world)
+                elif face == "left":
+                    _solid(bm, (-w / 2 - out, u - half, lo_z), (-w / 2, u + half, hi_z), slot, to_world)
+                else:
+                    _solid(bm, (w / 2, u - half, lo_z), (w / 2 + out, u + half, hi_z), slot, to_world)
+    if house.get("balcony") and floors > 1:
+        x0 = -w / 2 + 0.3
+        z = TOWN_FOOTING_M + storey - 0.1
+        _solid(bm, (x0, -d / 2 - 0.9, z), (x0 + min(3.6, w * 0.5), -d / 2, z + 1.1), wall, to_world)
+
+
+def add_surroundings(made: dict, points, camera_at, grounds=(), level: float = 0.0) -> tuple[list, dict]:
+    """A town round the place (plan's surroundings, town.py): what of it stands beyond the place's things (`points`:
+    standing_points) from the camera and off the place's `grounds` (ground_rects), as three meshes in the middle
+    band: the houses (TOWN_SLOTS as its material slots), the utility poles, and the garden trees (natural things:
+    told by their shade), standing at the height `level` (ground_level). Returns the meshes and the town as kept."""
+    kept = beyond(made, points, (camera_at[0], camera_at[1]), grounds=grounds) if points or grounds else made
+    kept = {**kept, "levelM": round(level, 3)}
+    coll = band_collection("middle")
+    material = tone_material("proxy_middle", lift=TONE_LIFT["middle"])
+    out = []
+    if kept["houses"]:
+        bm = bmesh.new()
+        for house in kept["houses"]:
+            _town_house(bm, house)
+        obj = _mesh_object(PREFIX + "town_houses", bm, coll, material)
+        for _ in TOWN_SLOTS[1:]:
+            obj.data.materials.append(material)
+        obj["nb_place_materials"] = list(TOWN_SLOTS)
+        out.append(obj)
+    if kept["poles"]:
+        bm = bmesh.new()
+        for pole in kept["poles"]:
+            x, y, z = pole["centreM"]
+            h = pole["heightM"]
+            stem = bmesh.ops.create_cone(bm, cap_ends=True, segments=8, radius1=0.16, radius2=0.12, depth=h)
+            bmesh.ops.translate(bm, vec=(x, y, z + h / 2), verts=stem["verts"])
+            for width, at in ((1.6, 0.92), (1.2, 0.84)):
+                arm = bmesh.ops.create_cube(bm, size=1.0)
+                bmesh.ops.scale(bm, vec=(width, 0.08, 0.08), verts=arm["verts"])
+                bmesh.ops.translate(bm, vec=(x, y, z + h * at), verts=arm["verts"])
+        bmesh.ops.recalc_face_normals(bm, faces=bm.faces)
+        obj = _mesh_object(PREFIX + "town_poles", bm, coll, material)
+        obj["nb_place_materials"] = ["コンクリート"]
+        out.append(obj)
+    if kept["trees"]:
+        obj = add_trees({"trees": kept["trees"]}, coll, material)
+        obj.name = PREFIX + "town_trees"
+        obj["nb_place_materials"] = ["草"]
+        out.append(obj)
+    for obj in out:
+        obj.location.z = level
+        obj["nb_band"] = "middle"
+        obj["nb_label"] = "市街地"
+    return out, kept
 
 
 def _append(path: Path, wanted: str):
@@ -536,6 +701,10 @@ def add_shape(obj: dict, camera_at, coll, material):
             if part["material"] in FOLIAGE and part.get("shape") == "sphere":
                 mark_foliage(piece)
         out.append(piece)
+    if any(piece.get("nb_foliage") for piece in out):
+        # A tree, a bush: the whole thing (its trunk and boughs too) is a natural thing, told by its shade.
+        for piece in out:
+            piece["nb_natural"] = True
     return out
 
 
@@ -801,6 +970,10 @@ def add_place(place: dict):
         if any(g == "黒い塗装" for g in guessed):
             mark_sharp(o)
         leafy = [g in FOLIAGE for g in guessed]
+        # A natural thing (a tree, a hedge: leaves on it, or its name says so), told by its shade (lines.py); a lawn
+        # is a ground.
+        if (any(leafy) or any(w in o.name.lower() for w in NATURAL_WORDS)) and not o.get("nb_ground"):
+            o["nb_natural"] = True
         # Too fine for the pen: the whole object if its name says so, else the slots whose material's name does (a
         # roof kit's solar slot, not its parapet).
         whole = any(w in o.name.lower() for w in FINE_WORDS)
@@ -874,5 +1047,16 @@ def build(plan: dict) -> dict:
         measured["figures"][fig["id"]] = [man]
     if plan.get("far"):
         measured["panorama"] = add_far(plan["far"])["panorama"]
+    around = plan.get("surroundings")
+    if around and around.get("kind") == "town":
+        # A town round the place, beyond what the place holds (so it hides none of it).
+        bpy.context.view_layer.update()
+        measured["surroundings"], measured["around"] = add_surroundings(
+            around,
+            standing_points(measured["place"]),
+            plan["camera"]["positionM"],
+            ground_rects(measured["place"]),
+            ground_level(measured["place"]),
+        )
     bpy.context.view_layer.update()
     return measured

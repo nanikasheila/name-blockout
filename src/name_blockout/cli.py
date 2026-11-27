@@ -207,6 +207,7 @@ def cmd_top(a) -> int:
     from .plan import build_develop_plan
     from .requirement import current, effective, read_requirement
     from .top import top_words, write_top
+    from .town import beyond
 
     data = read_instruction(a.instruction)
     folder = _folder(a, data)
@@ -239,6 +240,14 @@ def cmd_top(a) -> int:
             meshes = [o for o in bscene.add_place(plan["place"]).all_objects if o.type == "MESH"]
             cut = bmeasure.indoor_cut(plan["camera"]["positionM"])
             outlines = bmeasure.footprints(meshes, cut["cutM"] if cut else None)
+            if (plan.get("surroundings") or {}).get("kind") == "town":
+                # The town as it will be built: beyond what the place holds.
+                plan["surroundings"] = beyond(
+                    plan["surroundings"],
+                    bscene.standing_points(meshes),
+                    plan["camera"]["positionM"][:2],
+                    grounds=bscene.ground_rects(meshes),
+                )
         written = write_top(folder, plan, outlines, cut=cut)
         out.append({"shot": plan["shot"], "label": plan["label"], "svg": written["svg"], "json": written["json"], "top": written["top"]})
         if not a.json:

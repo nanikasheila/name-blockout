@@ -324,6 +324,18 @@
             "additionalProperties": false
           }
         },
+        "surroundings": {
+          "description": "場所のまわり（場所や作者の物の向こうの地面）に何があるか。town（市街地）なら、道具が種から家並み・庭木・電柱を、場の軸にそろえた通りに並べる。カメラから見て、場所の物より向こうにだけ置く（場所を隠さない）。open は何も置かない（白い地面）。",
+          "type": "object",
+          "required": ["kind"],
+          "properties": {
+            "kind": { "enum": ["town", "open"] },
+            "seed": { "description": "家並みを決める種（同じ種なら同じ街）。", "type": "integer", "minimum": 0 },
+            "reachM": { "description": "カメラからどこまで並べるか（既定: 絵に見える地面の先まで、最大 250m）。", "type": "number", "exclusiveMinimum": 0 },
+            "note": { "type": "string" }
+          },
+          "additionalProperties": false
+        },
         "far": {
           "description": "遠景の層（奥から）。全天球の画像（素材の panorama）か、道具が作る街並み・山並み・木立。カメラの高さが変わってもほとんど動かない距離のもの。",
           "type": "array",

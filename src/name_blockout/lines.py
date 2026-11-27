@@ -8,6 +8,8 @@ The author's rule for a manga background's finish:
   thin;
 - near things are told by their lines; in the middle distance things are told by their tones (the shapes left white
   or toned: negative space), and far away lines are all but gone;
+- natural things (a tree, a bush) are told by their shade rather than by an outline: they get no line of their own,
+  only the finest in the near band;
 - hatching and the like (a floor's joints) are not these lines: they are drawn apart (develop.py).
 
 How deep a boundary is, is measured as the eye sees depth: by the difference of 1/distance on its two sides (as
@@ -143,6 +145,7 @@ def boundary_depths(
     d_ref: float | None = None,
     deepest: float | None = None,
     ground: np.ndarray | None = None,
+    natural: np.ndarray | None = None,
 ) -> tuple[np.ndarray, float, float]:
     """How deep the boundary at each pixel is (0: none … 1: the deepest), marked on the boundary's near side; the
     foreground distance (`d_ref`) and the deepest boundaries' distance (`deepest`) used.
@@ -150,7 +153,7 @@ def boundary_depths(
     `z`: each pixel's depth from the camera (m); `thing`: where there is a surface (not the sky); `normal`: each
     pixel's surface normal (unit, 3 values) for the folds; `soft`: surfaces whose folds are not drawn (a crown's
     lumps, a louvre's slats); `ground`: the ground's surfaces (a lot, a lawn: their far end against the sky is a
-    horizon)."""
+    horizon); `natural`: natural things (a tree, a bush: told by their shade, not by an outline)."""
     q = np.where(thing, 1.0 / np.maximum(z, 1e-3), 0.0).astype(np.float32)
     gap = np.zeros_like(q)
     solid = np.zeros_like(q)  # the same, before things only (not before the sky)
@@ -197,6 +200,10 @@ def boundary_depths(
             fold |= bent
             nearest = np.maximum(nearest, np.where(bent, np.maximum(q, _shift(q, dy, dx)), 0.0))
         depth = np.maximum(depth, np.where(fold, FOLD_DEPTH * np.minimum(1.0, nearest * d_ref), 0.0))
+    if natural is not None:
+        # A natural thing is told by its shade, not by a line round it: its own boundaries get none, but in the
+        # near band the finest (there a line may tell a thing by its silhouette).
+        depth = np.where(thing & natural, np.where(z <= NEAR_M, np.minimum(depth, FOLD_DEPTH), 0.0), depth)
     depth[depth < 1e-3] = 0.0  # rounding on an even plane
     depth[(depth > 0) & (_count(depth > 0, 2) < SPECK_UNDER)] = 0.0
     return depth.astype(np.float32), d_ref, deepest
@@ -316,18 +323,20 @@ def boundary_lines(
     deepest: float | None = None,
     flat: np.ndarray | None = None,
     ground: np.ndarray | None = None,
+    natural: np.ndarray | None = None,
 ) -> tuple[np.ndarray, dict]:
     """The lines' ink (0–1) at the picture's size, from passes drawn `by` times as large; and what was measured
     (the foreground distance, the deepest boundaries' distance, the share of the picture inked and the lines'
     widths, by band). `flat`: surfaces that get no lines of their own (the far band's layers: flat tones);
-    `ground`: the ground's surfaces (no line where they end against the sky far off)."""
+    `ground`: the ground's surfaces (no line where they end against the sky far off); `natural`: natural things
+    (trees, bushes: no outline of their own beyond the near band)."""
     lined = thing if flat is None else thing & ~flat
     if d_ref is None or deepest is None:
         # The picture's scales from the things that are lined (a backdrop's skyline is not its foreground).
         found = boundary_depths(z, lined, ground=ground)[1:]
         d_ref = found[0] if d_ref is None else d_ref
         deepest = found[1] if deepest is None else deepest
-    depth, d_ref, deepest = boundary_depths(z, thing, normal, soft, d_ref, deepest, ground)
+    depth, d_ref, deepest = boundary_depths(z, thing, normal, soft, d_ref, deepest, ground, natural)
     if flat is not None:
         depth[flat] = 0.0
     width = widths(depth, px_per_mm * by)

@@ -24,6 +24,10 @@ from .materials import DEFAULT, LIBRARY, guess
 from .plan import folder_of, instruction_dir, targets, vanishing_axes
 from .sizes import usual_size
 from .solve import DEFAULT_FIGURE_M, camera_height_from_figure, fit_box
+from .town import KIND_LABELS as TOWN_LABELS
+from .town import KINDS as TOWN_KINDS
+from .town import REACH_M as TOWN_REACH_M
+from .town import seen_reach
 from .vec import box_iou, point_line_distance
 
 # Where an eye can be, indoors (floor to under the ceiling) and out (the ground to a high roof), in metres.
@@ -357,6 +361,43 @@ def check_shot(data: dict, shot: dict, base: Path | None = None) -> list[dict]:
                 )
                 if places
                 else None,
+            )
+        )
+
+    # --- what lies round the place ----------------------------------------------------------
+    around = shot.get("surroundings")
+    if around is not None and around.get("kind") not in TOWN_KINDS:
+        out.append(
+            finding(
+                "surroundings.kind",
+                "error",
+                shot,
+                "surroundings.kind",
+                f"まわり（surroundings.kind）が「{around.get('kind')}」です（town か open）",
+            )
+        )
+    elif (
+        around is None
+        and camera is not None
+        and setting_of(shot)[0] == "outdoor"
+        and (place.get("asset") or shot.get("objects"))
+        and seen_reach(camera) < TOWN_REACH_M
+    ):
+        # Looking down, the horizon is out of the picture: no far layer shows, and the ground past the place is
+        # all there is beyond it.
+        out.append(
+            finding(
+                "surroundings.open",
+                "info",
+                shot,
+                "surroundings.kind",
+                "見下ろしの絵で、場所の向こうの地面に何があるか決まっていません。何も置かず、白い地面のままにします",
+                question(
+                    "場所のまわりには何がありますか？",
+                    [(TOWN_LABELS[k], {"surroundings.kind": k}) for k in TOWN_KINDS],
+                    0,
+                    "アイレベルがコマの外なので遠景は出ません。場所の向こうは地面だけが見えます",
+                ),
             )
         )
 

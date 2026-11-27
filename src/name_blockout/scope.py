@@ -21,7 +21,7 @@ import json
 
 from .room import room_of
 
-DESIGN_FIELDS = ("frame", "ruler", "camera", "place", "objects", "figures", "far", "room")
+DESIGN_FIELDS = ("frame", "ruler", "camera", "place", "objects", "figures", "far", "surroundings", "room")
 DESIGN_INTENT = ("none", "brief", "camera")
 DEVELOP_FIELDS = ("look", "render", "stage")
 

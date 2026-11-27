@@ -179,6 +179,9 @@ PLACE_WORDS = {
 }
 #: The materials whose things are drawn by their outline only (the pen does not go into a crown's facets).
 FOLIAGE = ("草",)
+#: Words in the names of natural things in a place (besides whatever has leaves): told by their shade, not by an
+#: outline (lines.py).
+NATURAL_WORDS = ("tree", "trunk", "bark", "bush", "shrub", "hedge", "plant", "rock", "boulder", "木", "幹", "植栽", "岩")
 #: Words of things too fine to draw line by line at a name's size (a solar panel's cells, a louvre): their outline
 #: only, the rest left to the tone.
 FINE_WORDS = ("solar", "louver", "louvre", "grating", "grille", "mesh", "ソーラー", "ルーバー")
