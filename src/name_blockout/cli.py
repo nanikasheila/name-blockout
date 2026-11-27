@@ -12,6 +12,7 @@
   scope     <指示.json> --shot ID           what a rebuild would redo (design / develop / none)
   blockout  <指示.json> [--shot ID …]       build, check in numbers and draw the Blockout (needs Blender)
   develop   <指示.json> [--shot ID …]       the development: the same layout with light and materials (needs Blender)
+  read      <指示.json> --shot ID                  読み取り: the finished picture alone, for a reader who knows nothing
   critique  <指示.json> --shot ID [--reference 絵]   講評: the take beside its reference, the numbers and the request
                                           for a critic who did not build it (needs Blender); --answer records the answer
   materials                               the material library (3D and how a manga draws it)
@@ -374,6 +375,30 @@ def cmd_critique(a) -> int:
     return 0
 
 
+def cmd_read(a) -> int:
+    from .reading import ReadingError, make_reading
+    from .requirement import current, effective, read_requirement
+
+    data = read_instruction(a.instruction)
+    raw = find_shot(data, a.shot)
+    folder = _folder(a, data)
+    version = current(read_requirement(folder, raw["id"]))
+    shot, _ = effective(raw, (version or {}).get("answers", {}))
+    try:
+        made = make_reading(folder, data, shot, take=a.take)
+    except ReadingError as error:
+        print(str(error), file=sys.stderr)
+        return 1
+    words = [
+        f"{made['label']}: 案{made['take']} の読み取りの一式を {made['folder']} に作りました",
+        f"  {made['alone']} だけを、この作品を何も知らない読み手（まっさらな会話）に渡してください。",
+        "  返ってきた読み取りを 答え合わせ.md と比べます:",
+        *[f"    {line}" for line in made["intended"]],
+    ]
+    _print(made, a.json, "\n".join(words))
+    return 0
+
+
 def cmd_blockout(a) -> int:
     code = _in_blender(a)
     if code is not None:
@@ -452,6 +477,10 @@ def parser() -> argparse.ArgumentParser:
         c.add_argument("--only-changed", action="store_true", help="前に組んだときから変わったコマだけ")
         c.add_argument("--no-render", action="store_true", help="組んで照合するだけ（描き出さない）")
         c.add_argument("--blender", help="Blender の場所")
+    c = command("read", cmd_read, "読み取り: 何も知らない読み手に渡す、絵だけの一式を作る")
+    c.add_argument("--shot", required=True)
+    c.add_argument("--folder", help="作業フォルダー（既定: 指示書から）")
+    c.add_argument("--take", help="読み取る案の番号（既定: いちばん新しい開発の案）")
     c = command("critique", cmd_critique, "講評: 作っていない講評役に渡す絵・数字・依頼を作る（Blender）／答えを記録する")
     c.add_argument("--shot", required=True)
     c.add_argument("--folder", help="作業フォルダー（既定: 指示書から）")

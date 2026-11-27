@@ -150,3 +150,51 @@ def test_no_picture_no_pack(tmp_path):
 def test_side_by_side_is_capped():
     sheet = side_by_side(np.ones((1000, 3000, 4), dtype=np.float32), np.zeros((500, 1500, 3), dtype=np.float32), max_px=1200)
     assert sheet.shape[1] <= 1200 and sheet.shape[2] == 4
+
+
+def test_a_cold_reading_gets_the_picture_alone_and_nothing_of_the_work(tmp_path):
+    """読み取り: a reader who knows nothing gets a folder with the picture and the questions only; what the
+    instruction says is there is kept beside it, for comparing afterwards."""
+    from name_blockout.reading import ALONE_DIR, INTENDED_FILE, PICTURE_FILE, QUESTIONS_FILE, ReadingError, intended, make_reading
+
+    folder = tmp_path
+    shot = {
+        **SHOT,
+        "intent": {"brief": "坂の上の家を見下ろす"},
+        "place": {"asset": "坂の上の家"},
+        "look": {"timeOfDay": "afternoon", "weather": "clear"},
+        "surroundings": {"kind": "town"},
+        "objects": [{"id": "o1", "label": "給水塔"}],
+    }
+    data = {"work": {"title": "例", "worldBrief": "舞台は日本の地方都市"}, "shots": [shot]}
+    with pytest.raises(ReadingError, match="読み取る絵がありません"):
+        make_reading(folder, data, shot)
+    take = folder / "案" / "panel1" / "2"
+    take.mkdir(parents=True)
+    (take / "完成.png").write_bytes(b"picture")
+    (folder / "基準.md").write_text("- この家のまわりは市街地\n", encoding="utf-8")
+    made = make_reading(folder, data, shot)
+    alone = folder / "読み取り" / "panel1" / "2" / ALONE_DIR
+    assert made["take"] == "2" and sorted(p.name for p in alone.iterdir()) == sorted([PICTURE_FILE, QUESTIONS_FILE])
+    assert (alone / PICTURE_FILE).read_bytes() == b"picture"
+    # The questions tell nothing of the work: no place, no country, no time of day, no rule of the author's.
+    asked = (alone / QUESTIONS_FILE).read_text(encoding="utf-8")
+    for word in ("坂の上", "日本", "市街地", "午後", "給水塔", "例"):
+        assert word not in asked.replace("例えば", ""), word
+    assert "どこの国・地域" in asked and "5 段階" in asked
+    # What it is compared with afterwards.
+    assert (
+        intended(data, shot, folder)
+        == made["intended"]
+        == [
+            "作品の設定: 舞台は日本の地方都市",
+            "このコマ: 坂の上の家を見下ろす",
+            "場所: 坂の上の家",
+            "時間帯・天気: 午後・晴れ",
+            "場所のまわり: 市街地（日本の住宅街）",
+            "物: 給水塔",
+            "作品の基準: この家のまわりは市街地",
+        ]
+    )
+    answers = (folder / "読み取り" / "panel1" / "2" / INTENDED_FILE).read_text(encoding="utf-8")
+    assert "読み手には見せない" in answers and "- 場所のまわり: 市街地（日本の住宅街）" in answers

@@ -260,6 +260,8 @@ def _around(made: dict | None, place_unread: bool) -> dict | None:
         ],
         "trees": [[t["centreM"][0], t["centreM"][1], t["radiusM"]] for t in made["trees"]],
         "poles": [p["centreM"][:2] for p in made["poles"]],
+        "walls": [[*w["fromM"], *w["toM"]] for w in (made.get("walls") or []) + (made.get("hedges") or [])],
+        "cars": [rect({**c, "sizeM": [c["sizeM"][0], c["sizeM"][1], 0.0]}) for c in made.get("cars") or []],
         "street": made.get("street"),
         "streetM": made.get("streetM"),
         "streets": made.get("streets") or [],
@@ -511,8 +513,13 @@ def to_svg(top: dict) -> str:
                 f'<line x1="{x0:.1f}" y1="{y0:.1f}" x2="{x1:.1f}" y2="{y1:.1f}" stroke="#ece7dc" '
                 f'stroke-width="{max(1.0, street.get("widthM", around["streetM"]) * scale):.1f}" stroke-opacity="0.7"/>'
             )
+        for x0, y0, x1, y1 in around.get("walls") or []:
+            (ax, ay), (bx, by) = px((x0, y0)), px((x1, y1))
+            out.append(f'<line x1="{ax:.1f}" y1="{ay:.1f}" x2="{bx:.1f}" y2="{by:.1f}" stroke="#c9b991" stroke-width="0.8"/>')
         for house in around["houses"]:
             out.append(f'<polygon points="{pts(house["rectM"])}" fill="#f3ead8" stroke="#b9a377" stroke-width="1"/>')
+        for car in around.get("cars") or []:
+            out.append(f'<polygon points="{pts(car)}" fill="#e4e4e4" stroke="#a8a8a8" stroke-width="0.6"/>')
         for x, y, r in around["trees"]:
             tx, ty = px((x, y))
             out.append(

@@ -809,7 +809,7 @@ def test_develop_a_town_round_the_place_and_a_tree_by_its_shade(tmp_path):
     shot["ruler"] = {"points": 2, "horizonMm": [[20, 8], [107, 8]], "vanishingMm": [[150, 8], [-40, 8]]}
     shot["camera"] = {"heightM": 14.0, "positionM": [-30, -30, 14.0], "lensMm": 37}
     shot["place"] = {"asset": "家"}
-    shot["surroundings"] = {"kind": "town", "seed": 4}
+    shot["surroundings"] = {"kind": "town", "seed": 4, "street": {"axis": "X", "atM": -17.0}}
     shot["look"]["materials"] = []
     shot["look"]["north"] = "-X"  # the afternoon sun from the picture's right: the tree's shade side shows
     (tmp_path / "指示.json").write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
@@ -829,8 +829,19 @@ def test_develop_a_town_round_the_place_and_a_tree_by_its_shade(tmp_path):
 
     bpy.ops.wm.open_mainfile(filepath=str(work / "scene.blend"))
     houses = bpy.data.objects["NB_town_houses"]
-    assert list(houses["nb_place_materials"]) == ["白壁", "コンクリート", "木", "瓦", "トタン", "ガラス"] and houses["nb_band"] == "middle"
-    assert {p.material_index for p in houses.data.polygons} >= {0, 5}  # walls and windows at the least
+    slots = ["白壁", "コンクリート", "木", "瓦", "トタン", "ガラス", "金属", "黒い塗装"]
+    assert list(houses["nb_place_materials"]) == slots and houses["nb_band"] == "middle"
+    assert {p.material_index for p in houses.data.polygons} >= {0, 3, 5}  # walls, tiled roofs and windows at the least
+    # A Japanese quarter: the plots' walls, cars in their car spaces, poles, and the wires between them (hairlines:
+    # solid black, no line drawn along them, no shadow).
+    assert around["walls"] and around["cars"] and around["poles"] and around["wires"]
+    assert list(bpy.data.objects["NB_town_walls"]["nb_place_materials"]) == ["コンクリート"]
+    assert list(bpy.data.objects["NB_town_cars"]["nb_place_materials"]) == slots and bpy.data.objects["NB_town_poles"]
+    wires = bpy.data.objects["NB_town_wires"]
+    assert wires.get("nb_hairline") and wires.get("nb_noshadow") and list(wires["nb_place_materials"]) == ["黒い塗装"]
+    assert not wires.hide_render
+    if around["hedges"]:
+        assert bpy.data.objects["NB_town_hedges"].get("nb_natural")
     assert bpy.data.objects["tree_crown"].get("nb_natural") and bpy.data.objects["tree_trunk"].get("nb_natural")
     assert not bpy.data.objects["shell"].get("nb_natural") and bpy.data.objects["NB_town_trees"].get("nb_natural")
 
@@ -883,6 +894,21 @@ def test_develop_a_town_round_the_place_and_a_tree_by_its_shade(tmp_path):
         inked += int((alpha[area] > 0.5).sum())
         toned += int(((tone[area][..., 3] > 0.5) & (tone[area][..., :3].max(axis=-1) < 0.8)).sum())
     assert inked > 50 and toned > 200, (inked, toned)
+    # A wire between two poles is drawn: a black hair where it hangs (the lowest of them, the telephone cable, along
+    # its sag).
+    from name_blockout.blender.scene import TOWN_WIRES
+
+    across, share, sag, _ = TOWN_WIRES[-1]
+    poles = {p["id"]: p for p in around["poles"]}
+    drawn = 0
+    for wire in around["wires"]:
+        a, b = (poles[i] for i in wire["poles"])
+        for t in (0.2, 0.35, 0.5, 0.65, 0.8):
+            point = [a["centreM"][i] + (b["centreM"][i] - a["centreM"][i]) * t + a["streetward"][i] * across for i in (0, 1)]
+            y, x = at((*point, a["centreM"][2] + a["heightM"] * share - sag * 4 * t * (1 - t)))
+            if 3 <= y < alpha.shape[0] - 3 and 3 <= x < alpha.shape[1] - 3:
+                drawn += int(tone[y - 3 : y + 4, x - 3 : x + 4, :3].min() < 0.3)
+    assert drawn, around["wires"]
 
 
 @needs_blender
@@ -913,7 +939,7 @@ def test_a_town_stands_on_the_land_a_place_was_modelled_on(tmp_path):
     r = run_blockout(tmp_path / "指示.json", log=lambda *_: None)[0]
     plan = json.loads((tmp_path / "blockout" / "panel1" / r["take"] / "plan.json").read_text(encoding="utf-8"))
     around = plan["surroundings"]
-    assert around["street"] == {"axis": "X", "atM": -20.0, "widthM": 6.0}
+    assert around["street"] == {"axis": "X", "atM": -20.0, "widthM": 5.0}
     # From beyond the house and the tree (the farthest of them about 50 m off), not from the land's edge 170 m off.
     assert 45 < around["houses"][0]["distanceM"] < 80, around["houses"][0]
     for house in around["houses"]:

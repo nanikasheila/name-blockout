@@ -391,6 +391,11 @@ def develop_passes(plan: dict, built: dict, out_dir: Path, samples: int = 16) ->
     grid = bpy.data.collections.get(PREFIX + "ground")
     if grid is not None:
         grid.hide_render = True
+    # A hairline (a wire between two poles: as thin as a pen's finest line, and solid black) is its own line: it
+    # is no boundary to draw a line along on either side, nor has it folds to draw (the 線画 below).
+    hairlines = [obj for obj in scene.objects if obj.get("nb_hairline") and not obj.hide_render]
+    for obj in hairlines:
+        obj.hide_render = True
     by = 2 if w * h < SUPERSAMPLE_UNDER else 1
     scene.render.resolution_percentage = 100 * by
     layer.material_override = _depths()
@@ -433,6 +438,8 @@ def develop_passes(plan: dict, built: dict, out_dir: Path, samples: int = 16) ->
     passes = [p for p in ("線画", "遠景") if p in plan["render"]["passes"]]
     files = render_passes(plan, out_dir, passes=passes, texture_from=line_info["foregroundM"])
     collection("light_ground").hide_render = False
+    for obj in hairlines:
+        obj.hide_render = False
     # The grid lies on the same plane as the light's ground: the two would shade each other black.
     grid = bpy.data.collections.get(PREFIX + "ground")
     if grid is not None:

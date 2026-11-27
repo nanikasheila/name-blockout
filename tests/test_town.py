@@ -21,6 +21,7 @@ from name_blockout.town import (
     LOT_MAX_M,
     REACH_M,
     STREET_M,
+    WIRE_REACH_M,
     beyond,
     off_outline,
     outline,
@@ -93,8 +94,65 @@ def test_houses_stand_on_their_plots_clear_of_each_other_and_of_the_streets():
         row = math.floor(ay0 / BLOCK_DEEP_M)
         assert ay0 >= row * BLOCK_DEEP_M + STREET_M / 2 and ay1 <= (row + 1) * BLOCK_DEEP_M - STREET_M / 2
     for house in made["houses"]:
-        assert house["sizeM"][2] >= 3.0 and house["roof"] in ("gable", "flat") and house["front"] in ("-Y", "+Y")
+        assert house["sizeM"][2] >= 3.0 and house["roof"] in ("gable", "hip", "flat") and house["front"] in ("-Y", "+Y")
         assert house["ridge"] in ("along", "across")
+
+
+def test_the_town_is_a_japanese_residential_quarter():
+    """What tells a reader the story is set in Japan: narrow streets walled on both sides, plots close together,
+    hipped and gable roofs with a lower roof here and there, balconies, cars in their car spaces, flats with
+    balconies, utility poles in the street's edge and the wires between them."""
+    _, shot = looking_down()
+    camera = fit_camera(shot)
+    made = town(camera, {"seed": 4, "reachM": 200})
+    assert STREET_M <= 6.0 and "日本の住宅街" in town_words(made)
+    houses = [h for h in made["houses"] if h["kind"] == "house"]
+    flats = [h for h in made["houses"] if h["kind"] == "flats"]
+    assert {h["roof"] for h in houses} == {"gable", "hip", "flat"}
+    assert sum(h["roof"] == "hip" for h in houses) > len(houses) / 4
+    # A lower roof (下屋): the upper storey on a part of the ground floor, at its back.
+    lower = [h for h in houses if h.get("upper")]
+    assert len(lower) > len(houses) / 5
+    assert all(h["floors"] == 2 and h["upper"]["sizeM"][0] < h["sizeM"][0] and h["upper"]["sizeM"][1] <= h["sizeM"][1] for h in lower)
+    assert sum(bool(h.get("balcony")) for h in houses) > len(houses) / 3
+    assert flats and all(f["roof"] == "flat" and f["floors"] >= 2 and f["units"] >= 2 for f in flats)
+    # Houses stand close: next to their neighbours across a wall, a metre or two off.
+    widths = sorted(h["sizeM"][0] for h in houses)
+    assert 5.5 < widths[len(widths) // 2] < 10.0
+    # Walls along the plots' boundaries (square to the streets), gateposts, hedges, cars nose to their street.
+    assert len(made["walls"]) > len(made["houses"]) and made["posts"] and made["hedges"] and made["cars"]
+    for wall in made["walls"] + made["hedges"]:
+        (x0, y0), (x1, y1) = wall["fromM"], wall["toM"]
+        assert (x0 == x1) != (y0 == y1) and 0.3 < wall["heightM"] < 2.0
+    assert {c["front"] for c in made["cars"]} <= {"-Y", "+Y"} and {c["kind"] for c in made["cars"]} <= {
+        "kei",
+        "compact",
+        "minivan",
+        "sedan",
+    }
+    at = camera.position[:2]
+    for item in made["posts"] + made["cars"] + made["trees"] + made["poles"]:
+        assert math.hypot(item["centreM"][0] - at[0], item["centreM"][1] - at[1]) > NEAR_M
+    # Poles stand in the street at its edge, before the walls; a wire hangs between two poles that are both there.
+    lines = [st["atM"] for st in made["streets"] if st["axis"] == "X"]
+    for pole in made["poles"]:
+        off = min(abs(pole["centreM"][1] - line) for line in lines)
+        assert STREET_M / 2 - 0.5 < off < STREET_M / 2
+    ids = {p["id"] for p in made["poles"]}
+    assert made["wires"] and all(set(w["poles"]) <= ids for w in made["wires"])
+    for wire in made["wires"]:
+        middle = [(wire["fromM"][i] + wire["toM"][i]) / 2 for i in (0, 1)]
+        assert math.hypot(middle[0] - at[0], middle[1] - at[1]) <= WIRE_REACH_M
+    # Without one of its poles a wire is gone; walls and cars among the place's things too.
+    place = [(x, y) for x in (0.0, 40.0) for y in (0.0, 40.0)]
+    kept = beyond(made, place, at)
+    left = {p["id"] for p in kept["poles"]}
+    assert len(kept["wires"]) < len(made["wires"]) and all(set(w["poles"]) <= left for w in kept["wires"])
+    hull = outline(place)
+    for wall in kept["walls"] + kept["hedges"]:
+        assert off_outline(hull, *wall["fromM"]) > STREET_M and off_outline(hull, *wall["toM"]) > STREET_M
+    for car in kept["cars"]:
+        assert off_outline(hull, *car["centreM"][:2]) > STREET_M
 
 
 def test_a_street_runs_where_the_place_s_road_does_and_along_either_axis():
@@ -118,11 +176,12 @@ def test_a_street_runs_where_the_place_s_road_does_and_along_either_axis():
     wide = town(camera, {"seed": 4, "reachM": 150, "street": {"axis": "X", "atM": -18.5, "widthM": 8.2}})
     assert wide["streetM"] == 8.2 and "幅 8.2 m" in town_words(wide)
     lines = sorted(st["atM"] for st in wide["streets"] if st["axis"] == "X")
-    assert -18.5 in lines and lines[1] - lines[0] == pytest.approx(BLOCK_DEEP_M + 2.2)
+    assert -18.5 in lines and lines[1] - lines[0] == pytest.approx(BLOCK_DEEP_M + 8.2 - STREET_M)
     for house in wide["houses"]:
         ys = [y for _, y in rect(house)]
         assert all(not (min(ys) < line + 4.1 - 1e-6 and max(ys) > line - 4.1 + 1e-6) for line in lines)
-    assert wide["poles"] and all(min(abs(p["centreM"][1] - line) for line in lines) > 4.1 for p in wide["poles"])
+    # The poles stand in its edge (a quarter metre in), not out in the roadway.
+    assert wide["poles"] and all(3.6 < min(abs(p["centreM"][1] - line) for line in lines) < 4.1 for p in wide["poles"])
     # Along Y: the same town turned, its houses fronting ±X, their footprints deep along X.
     turned = town(camera, {"seed": 4, "reachM": 150, "street": {"axis": "Y", "atM": 10.0}})
     assert turned["houses"] and {h["front"] for h in turned["houses"]} <= {"-X", "+X"}
