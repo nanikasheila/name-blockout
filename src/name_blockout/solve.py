@@ -17,6 +17,11 @@ from .camera import Camera
 from .vec import add, box_iou, nelder_mead, scale
 
 DEFAULT_FIGURE_M = 1.6
+#: A range whose bottom lies this near the eye level (a share of the picture's longer side) or above it does not
+#: show where the thing stands: a foot there would be hundreds of metres off, or nowhere on the ground at all.
+FOOT_MIN = 0.005
+#: How strongly the usual size holds a thing whose foot does not show (against how well its range is filled).
+SIZE_HOLD = 1e-2
 FIGURE_WIDTH_M = 0.5
 FIGURE_DEPTH_M = 0.3
 
@@ -83,6 +88,16 @@ def _start(camera: Camera, target, floor: float):
     return foot, width, height
 
 
+def foot_shows(camera: Camera, target) -> bool:
+    """Whether the bottom of a marked range can be where a thing stands on the ground: clearly under the eye level."""
+    x0, _, x1, y1 = target
+    r = camera.ray(((x0 + x1) / 2, y1))
+    level = math.hypot(r[0], r[1])
+    if level < 1e-9:
+        return r[2] < 0
+    return -r[2] / level * camera.focal_px >= FOOT_MIN * camera.longer
+
+
 def fit_box(
     camera: Camera,
     target,
@@ -98,6 +113,11 @@ def fit_box(
     ratio = prior[0] / prior[1] if prior else 1.0
     longer = camera.longer
     foot, width, height = _start(camera, target, floor)
+    # A thing on the ground whose range ends at the eye level or above it (a building looked up at, its foot out of
+    # the picture or lost in a rough range): its bottom edge says nothing, and following it would push the thing
+    # kilometres away and make it as large. Its top and sides are filled, and its usual size says how far it is.
+    footless = on_ground and size is None and not foot_shows(camera, target)
+    held = prior or (width, width / ratio, height)
 
     def unpack(q):
         if size is not None:
@@ -113,7 +133,9 @@ def fit_box(
         box = projected_box(camera, box_corners(centre, s, along))
         if box is None:
             return 1e9 + sum(v * v for v in q)
-        c = sum(((a - b) / longer) ** 2 for a, b in zip(box, target))
+        c = sum(((a - b) / longer) ** 2 for a, b in zip(box[:3] if footless else box, target))
+        if footless:
+            c += SIZE_HOLD * (math.log(s[2]) - math.log(held[2])) ** 2
         if size is None:
             c += 1e-4 * (math.log(s[0] / s[1]) - math.log(ratio)) ** 2
             if prior:
@@ -135,6 +157,9 @@ def fit_box(
     centre, s = unpack(best[0])
     box = projected_box(camera, box_corners(centre, s, along))
     residual = math.sqrt(best[1] / 4) * longer if box else float("inf")
+    if footless and box:
+        # How well the range is filled is told by its top and sides: its bottom is wherever the thing's foot falls.
+        residual = math.sqrt(sum(((a - b) / longer) ** 2 for a, b in zip(box[:3], target)) / 3) * longer
     return Placed(
         centre=tuple(centre),
         size=tuple(s),
@@ -142,7 +167,12 @@ def fit_box(
         box_px=box,
         target_px=tuple(target),
         residual_px=residual,
-        iou=box_iou(box, target) if box else 0.0,
+        iou=box_iou(box, (*target[:3], box[3]) if footless else target) if box else 0.0,
+        note=(
+            f"足もとがコマに出ていないので、{'ふつうの大きさ' if prior else '仮の距離 10 m'}（高さ {held[2]:.1f} m）から距離を決めた"
+            if footless
+            else ""
+        ),
     )
 
 

@@ -128,11 +128,16 @@ def build_plan(data: dict, shot: dict, instruction_path: str | Path | None = Non
         placed = fit_box(
             camera, target, size=size, along=along, on_ground=obj.get("onGround", True), prior=None if size else usual_size(obj["label"])
         )
+        footless = bool(placed.note)
+        if footless:
+            notes.append(f"物「{obj['label']}」: {placed.note}")
         if obj.get("positionM"):
             # Placed on the top view: it stands where the author (or a correction) put it, at the size given or the
             # size that filled the panel's range; how well it then fills that range is told, not forced.
             placed = place_box(camera, target, obj["positionM"], placed.size, along)
         entry = {"id": obj["id"], "label": obj["label"], "placed": placed.as_dict(), "fixedSize": bool(size)}
+        if footless and not obj.get("positionM"):
+            entry["footless"] = True
         if obj.get("positionM"):
             entry["fixedPlace"] = True
             if placed.iou < PLACED_OVERLAP:

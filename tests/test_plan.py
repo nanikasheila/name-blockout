@@ -55,3 +55,17 @@ def test_usual_size_keeps_a_sofa_a_sofa():
     p = build_plan(data, shot, EXAMPLE)
     w, d, h = next(o for o in p["objects"] if o["id"] == "o2")["placed"]["sizeM"]
     assert 0.25 < h / w < 0.8
+
+
+def test_a_building_looked_up_at_keeps_a_building_s_size():
+    """Its range ends above the eye level (the foot is not in it): the usual size says how far it stands, instead
+    of the range's bottom pushing it kilometres off and making it kilometres tall."""
+    path = EXAMPLE.parents[1] / "three-point" / "指示.json"
+    data = read_instruction(path)
+    p = build_plan(data, data["shots"][0], path)
+    tower = p["objects"][0]
+    assert tower["footless"] and 20 < tower["placed"]["sizeM"][2] < 45 and tower["distanceM"] < 60, tower
+    assert tower["placed"]["iou"] > 0.98
+    box, target = tower["placed"]["boxPx"], tower["placed"]["targetPx"]
+    assert all(abs(a - b) < 8 for a, b in zip(box[:3], target[:3])) and box[3] > target[3]
+    assert any("足もとがコマに出ていない" in n for n in p["notes"])

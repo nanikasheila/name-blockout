@@ -102,6 +102,9 @@ def verify(plan: dict, measured: dict) -> dict:
         if box is None or target is None:
             add(f"物「{obj['label']}」", None, IOU_TOL, False, note="測れませんでした")
             continue
+        if obj.get("footless"):
+            # Its foot is not in the picture (or not in the range): the range is filled by its top and sides.
+            target = [target[0], target[1], target[2], max(target[3], box[3])]
         iou = box_iou(box, target)
         strict = "asset" not in obj and not obj.get("fixedSize") and not obj.get("fixedPlace")
         add(
