@@ -45,7 +45,9 @@ UNUSUAL = 3.0
 #: Which way north is, by its axis.
 NORTH_DIR = {"+X": (1.0, 0.0), "-X": (-1.0, 0.0), "+Y": (0.0, 1.0), "-Y": (0.0, -1.0)}
 #: A place's things are named on the drawing when they are at least this wide on it (px).
-NAME_FROM_PX = 36
+NAME_FROM_PX = 14
+#: …and parts that mean the same (バン) within this of each other get one name (px).
+SAME_NAME_PX = 120
 
 
 def _unit2(v):
@@ -411,7 +413,9 @@ def to_svg(top: dict) -> str:
             f'stroke="#fff" stroke-width="3" paint-order="stroke" stroke-linejoin="round">{escape(words)}</text>'
         )
 
-    taken: list[tuple[float, float, float, float]] = []
+    # Where names may not go: the compass (top left), the sun (top right) and the scale (bottom left).
+    taken: list[tuple[float, float, float, float]] = [(0, 0, 110, 125), (width - 120, 0, width, 120), (0, height - 40, 150, height)]
+    named: list[tuple[str, float, float]] = []
 
     def name(x, y, label, size=10, fill="#777", must=False) -> str:
         """A label that keeps clear of the ones before it (moved down or up a line or two; left out when there is
@@ -567,7 +571,11 @@ def to_svg(top: dict) -> str:
                     break  # the rings come largest first
                 mx, my = _inside(on)
                 if 0 <= mx <= width and 0 <= my <= height:
-                    out.append(name(mx, my + 4, place_word(o["name"])))
+                    # A thing in several parts (a van's body, glass, lining) is named once.
+                    means = place_word(o["name"]).split("（")[0]
+                    if not any(m == means and math.hypot(mx - x, my - y) < SAME_NAME_PX for m, x, y in named):
+                        named.append((means, mx, my))
+                        out.append(name(mx, my + 4, place_word(o["name"])))
                     break
 
     # The camera: where it stands, and its angle of view.
