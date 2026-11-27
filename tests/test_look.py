@@ -116,3 +116,15 @@ def test_indoors_the_light_is_the_room_s():
     assert setting_of({"objects": [{"id": "o1", "label": "ソファ"}], "look": {"setting": "outdoor"}}) == ("outdoor", None)
     floor, _ = assign(shot, "indoor")
     assert floor["ground"]["name"] == "白地" and floor["o1"]["name"] == "布"
+
+
+def test_glass_is_dark_from_outside_by_day_and_light_from_inside():
+    from name_blockout.materials import seen
+
+    glass, wall = LIBRARY["ガラス"].as_dict(), LIBRARY["白壁"].as_dict()
+    outside = seen(glass, "outdoor", "afternoon")
+    assert outside["tone"] >= 0.7 and outside["shadowTone"] > outside["tone"]  # dark by the density's measure
+    inside = seen(glass, "indoor", "noon")
+    assert inside["shadowTone"] <= 0.2
+    assert seen(glass, "outdoor", "night") == glass and seen(wall, "outdoor", "afternoon") == wall
+    assert glass == LIBRARY["ガラス"].as_dict()  # the library's own entry is not changed

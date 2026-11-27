@@ -79,12 +79,22 @@ def targets(shot: dict, frame: Frame) -> dict:
     return out
 
 
-def build_plan(data: dict, shot: dict, instruction_path: str | Path | None = None, preview_dpi: float | None = None) -> dict:
-    """The Blockout plan for one shot of an instruction (raises CameraError when the ruler gives no camera)."""
+def build_plan(
+    data: dict,
+    shot: dict,
+    instruction_path: str | Path | None = None,
+    preview_dpi: float | None = None,
+    finer: bool = False,
+) -> dict:
+    """The Blockout plan for one shot of an instruction (raises CameraError when the ruler gives no camera).
+
+    A preview is drawn at `preview_dpi`, at most the instruction's own dpi; `finer`: as asked even beyond it (a
+    development: the frame is a box on the paper in mm, and the instruction's dpi is only what the name was
+    written out at)."""
     base = instruction_dir(instruction_path)
     frame = frame_of(shot["frame"])
     dpi = preview_dpi or (shot.get("render") or {}).get("previewDpi") or PREVIEW_DPI
-    render_frame = frame.at_dpi(min(dpi, frame.dpi))
+    render_frame = frame.at_dpi(dpi if finer else min(dpi, frame.dpi))
     assumptions = list((shot.get("requirement") or {}).get("assumptions") or [])
     notes: list[str] = []
 
@@ -401,17 +411,23 @@ def default_far(shot: dict) -> list[dict]:
 
 def build_develop_plan(data: dict, shot: dict, instruction_path: str | Path | None = None, dpi: float | None = None) -> dict:
     """The development plan: the same camera and layout as the Blockout (the design does not move), with the light
-    (look.py) and each thing's material (materials.py) in numbers, drawn at `dpi` (default 300, at most the frame's)."""
+    (look.py) and each thing's material (materials.py) in numbers, drawn at `dpi` (default 300) from the frame's
+    box on the paper: an instruction written out coarser (a name at 150 dpi) is still developed at 300, since a
+    0.1 mm line is under a pixel at 150 and comes out as grey dots."""
     frame = frame_of(shot["frame"])
     setting, setting_assumed = setting_of(shot)
     # Outdoors the finished picture has a distance: far layers the author did not ask for are made (and noted).
     # A place (a .blend) ends somewhere: past it, when the eye level shows, the far layers too.
-    dpi = min(dpi or DEVELOP_DPI, frame.dpi)
+    dpi = dpi or DEVELOP_DPI
     far_assumed = default_far(shot) if setting == "outdoor" and not shot.get("far") else []
-    if far_assumed and shot.get("place") and not horizon_in_frame(build_plan(data, shot, instruction_path, dpi)):
+    if far_assumed and shot.get("place") and not horizon_in_frame(build_plan(data, shot, instruction_path, dpi, finer=True)):
         far_assumed = []
     built_from = {**shot, "far": far_assumed} if far_assumed else shot
-    plan = build_plan(data, built_from, instruction_path, dpi)
+    plan = build_plan(data, built_from, instruction_path, dpi, finer=True)
+    if dpi > frame.dpi:
+        plan["notes"].append(
+            f"指示の dpi は {frame.dpi:g} ですが、開発は {dpi:g}dpi で描きます（紙面の mm から。細い線が点々にならないように）"
+        )
     plan["hashes"] = {**hashes(shot), "objects": object_hashes(shot)}
     camera = plan["camera"]
     light, light_assumed = lighting(shot.get("look"), camera["headingDeg"], setting)

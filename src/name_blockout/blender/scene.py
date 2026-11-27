@@ -576,6 +576,26 @@ def mark_sharp(obj) -> None:
     attr.data.foreach_set("value", sharp)
 
 
+def mark_material_borders(obj) -> int:
+    """On a ground (a lot, a terrace), the edges where two materials meet (a lawn against a path, paving against a
+    kerb) marked to be drawn: the ground is left white whatever it is made of, so without a line the two would
+    run into one. Returns how many edges were marked."""
+    mesh = obj.data
+    if len(mesh.materials) < 2:
+        return 0
+    bm = bmesh.new()
+    bm.from_mesh(mesh)
+    border = [len({f.material_index for f in e.link_faces}) > 1 for e in bm.edges]
+    bm.free()
+    if not any(border):
+        return 0
+    attr = mesh.attributes.get("freestyle_edge") or mesh.attributes.new("freestyle_edge", "BOOLEAN", "EDGE")
+    marks = [False] * len(mesh.edges)
+    attr.data.foreach_get("value", marks)
+    attr.data.foreach_set("value", [a or b for a, b in zip(marks, border)])
+    return sum(border)
+
+
 #: A solar cell (m²): a slot whose faces are no larger than a few of these has its cells modelled face by face.
 CELL_AREA = 0.16 * 0.16
 
@@ -731,6 +751,7 @@ def add_place(place: dict):
         if _flat_and_large(o, lowest):
             guessed = [g if g in KEEP_ON_FLAT else FLAT for g in guessed]
             o["nb_ground"] = True
+            mark_material_borders(o)
         o["nb_place_materials"] = guessed
         if any(g == "黒い塗装" for g in guessed):
             mark_sharp(o)

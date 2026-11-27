@@ -427,7 +427,7 @@ def parser() -> argparse.ArgumentParser:
             c.add_argument("--by", default="author", choices=["author", "ai", "tool"])
     for name, help_, dpi in (
         ("blockout", "Blockout を組んで照合し描き出す（Blender）", "既定 150"),
-        ("develop", "開発: 同じ配置に光と材質（既定: stage が develop のコマ、Blender）", "既定 300、指示の dpi まで"),
+        ("develop", "開発: 同じ配置に光と材質（既定: stage が develop のコマ、Blender）", "既定 300。指示の dpi より細かくても描く"),
     ):
         c = command(name, cmd_blockout, help_)
         c.add_argument("--shot", action="append", help="このコマだけ（何度でも）")

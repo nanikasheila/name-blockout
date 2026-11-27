@@ -6,7 +6,7 @@ import numpy as np
 from name_blockout.lines import (
     FADE_FROM,
     MID_TONE,
-    W_FULL_MM,
+    W_DROP_MM,
     W_MAX_MM,
     W_MIN_MM,
     boundary_depths,
@@ -41,9 +41,9 @@ def test_a_deeper_boundary_gets_a_thicker_line():
     # …and the farther box (3 foregrounds off) counts less again by its distance.
     assert abs(near - (1 / 4 - 1 / 20) * 4) < 1e-3 and abs(mid - (1 / 12 - 1 / 20) * 4 * (FADE_FROM * 4 / 12)) < 1e-3
     assert depth[20, 9] == 0 and depth[20, 25] == 0  # the far side of the boundary, and inside the box
-    w, black = widths(depth, 600 / 25.4)
-    # Half as deep again… the square root: over a quarter the depth gives under half the width, both full black.
-    assert w[20, 10] > 1.8 * w[20, 70] > 0 and black[20, 10] == black[20, 70] == 1.0
+    w = widths(depth, 600 / 25.4)
+    # Half as deep again… the square root: over a quarter the depth gives under half the width.
+    assert w[20, 10] > 1.8 * w[20, 70] > 0
 
 
 def test_a_floor_running_away_is_no_boundary_and_the_sky_is_the_deepest():
@@ -85,8 +85,9 @@ def test_beyond_the_foreground_a_boundary_counts_less_and_tones_take_over():
     # 1/distance alone up to FADE_FROM foregrounds, then again by the distance.
     assert got[0] == 1.0 and abs(got[1] - 0.5) < 1e-3 and abs(got[2] - 0.25 * FADE_FROM * 5 / 20) < 1e-3
     assert abs(got[4] - (5 / 80) * (FADE_FROM * 5 / 80)) < 1e-4
-    mm, black = widths(depth, 1.0)
-    assert mm[20, 10] == W_MAX_MM and W_MIN_MM < mm[20, 130] < W_FULL_MM and 0 < black[20, 130] < 1  # 40 m: a pale hair
+    mm = widths(depth, 1.0)
+    # 40 m: its depth asks for a line under the pen's finest, and it gets the finest (black, never a paler hair).
+    assert mm[20, 10] == W_MAX_MM and W_DROP_MM <= W_MAX_MM * got[3] ** 0.5 < W_MIN_MM and mm[20, 130] == W_MIN_MM
     assert mm[20, 170] == 0  # 80 m: no line
     # …and there the tone takes over: the far post is toned, the near one left as it is; the ground never.
     floor = tone_floor(z, thing, 5.0)
@@ -134,11 +135,22 @@ def test_stroke_widths_round_and_smooth():
     thin = np.zeros((9, 9), dtype=np.float32)
     thin[4, :] = 0.4
     assert abs(stroke(thin)[4, 4] - 0.4) < 1e-6 and stroke(thin)[3, 4] == 0.0
-    # A paler line beside a black one: each keeps its own blackness across its width.
+    # A thinner line beside it: black across its own width, no wider.
     width[30, 5:36] = 3.0
-    black = np.where(width == 3.0, 0.5, 1.0).astype(np.float32)
-    ink = stroke(width, black)
-    assert ink[20, 20] == 1.0 and ink[22, 20] == 1.0 and ink[30, 20] == 0.5 and ink[31, 20] == 0.5
+    ink = stroke(width)
+    assert ink[20, 20] == 1.0 and ink[22, 20] == 1.0 and ink[30, 20] == 1.0 and ink[31, 20] == 1.0 and ink[33, 20] == 0.0
+
+
+def test_a_line_is_black_and_no_thinner_than_the_finest_or_not_there():
+    """No pale hairs: every depth gives a line of at least the pen's finest, or none."""
+    depth = np.linspace(0.0, 1.0, 2001, dtype=np.float32)[None, :]
+    mm = widths(depth, 1.0)
+    assert set(np.unique(mm[(mm > 0) & (mm < W_MIN_MM)])) == set()
+    assert mm[0, 0] == 0 and mm[0, -1] == W_MAX_MM and (np.diff(mm[0]) >= 0).all()
+    # A fold at the foreground is the finest line.
+    from name_blockout.lines import FOLD_DEPTH, fold_mm
+
+    assert abs(fold_mm() - W_MIN_MM) < 1e-9 and widths(np.array([[FOLD_DEPTH]], dtype=np.float32), 1.0)[0, 0] == W_MIN_MM
 
 
 def test_the_foreground_is_found_from_the_nearest_clear_boundaries():

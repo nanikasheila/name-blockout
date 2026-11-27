@@ -59,27 +59,11 @@ def _style(name: str, color, thickness: float, length_min: float):
     return style
 
 
-#: The development's texture lines (a floor's joints, a wall's boards: the edges a modeller marked) fade from the
-#: foreground's distance to this many times as far, and thin to this share.
-TEXTURE_FADE = 6.0
-TEXTURE_THIN = 0.4
-
-
-def _fade(style, start: float) -> None:
-    """The style's lines thinner and paler with distance from the camera, gone at TEXTURE_FADE × `start`."""
-    thin = style.thickness_modifiers.new("far", "DISTANCE_FROM_CAMERA")
-    thin.range_min, thin.range_max = start, start * TEXTURE_FADE
-    thin.value_min, thin.value_max = style.thickness, style.thickness * TEXTURE_THIN
-    pale = style.alpha_modifiers.new("far", "DISTANCE_FROM_CAMERA")
-    pale.range_min, pale.range_max = start, start * TEXTURE_FADE
-    pale.invert = True
-
-
 def _freestyle(scene, dpi: float, texture_from: float | None = None):
     """The line sets. For a Blockout: every thing's outline and edges, one pen pair per distance band. For a
     development (`texture_from`: its foreground's distance): only the folds and the texture lines (creases,
-    marked edges, the ground's grid), thin, fading with distance; its boundaries are drawn from depth (lines.py),
-    and far things get none."""
+    marked edges, the ground's grid), black and as thin as a pen's finest (lines.py; develop.py ends them with
+    distance); its boundaries are drawn from depth (lines.py), and far things get none."""
     scene.render.use_freestyle = True
     scene.render.line_thickness_mode = "ABSOLUTE"
     layer = bpy.context.view_layer
@@ -97,12 +81,12 @@ def _freestyle(scene, dpi: float, texture_from: float | None = None):
             continue
         scale = LINE_SCALE[group]
         if group in GROUNDS:
-            # The ground's grid is thin and grey, as a background artist draws a lot's paving (a place's joints:
-            # develop.py).
+            # The ground's grid: thin and grey in a Blockout (a construction grid); in a development a lot's
+            # joints, black and as thin as the pen's finest.
             width = max(0.75, outline * scale)
-            style = _style(f"NB_style_{group}", GROUND_LINE, width, width * 3)
             if texture_from:
-                _fade(style, texture_from)
+                width = max(0.75, fold_mm() * dpi / 25.4)
+            style = _style(f"NB_style_{group}", (0, 0, 0) if texture_from else GROUND_LINE, width, width * 3)
             ls = _lineset(fs, f"NB_lines_{group}", coll, style)
             ls.select_crease = True
             ls.select_edge_mark = True
@@ -115,11 +99,10 @@ def _freestyle(scene, dpi: float, texture_from: float | None = None):
         if texture_from:
             if group == "far":
                 continue
-            # A fold's width at the foreground (lines.py), thinner and paler with distance: the folds of small
-            # faces (a wall's boards) come out as whole strokes here, where a picture's pixels would dot them.
-            width = max(0.4, fold_mm() * dpi / 25.4)
+            # A fold's width (the pen's finest, lines.py): the folds of small faces (a wall's boards) come out as
+            # whole strokes here, where a picture's pixels would dot them.
+            width = max(0.75, fold_mm() * dpi / 25.4)
             style = _style(f"NB_style_{group}_texture", (0, 0, 0), width, max(3.0, inner * MIN_STROKE_WIDTHS))
-            _fade(style, texture_from)
             marks = _lineset(fs, f"NB_lines_{group}_texture", coll, style)
             marks.select_silhouette = False
             marks.select_external_contour = False

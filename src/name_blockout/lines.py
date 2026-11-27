@@ -17,6 +17,9 @@ foreground a boundary counts less again, as its distance grows (the middle dista
 So one rule gives all three: a near thing against a far wall gets a thick line; the same thing's foot on the ground
 a thin one; a gatepost ten foregrounds off a hair, and a tree 200 m off against the sky none.
 
+A line is black, and no thinner than a pen's finest (0.1 mm): a boundary too shallow for that gets no line at all
+(never a paler one: a grey hair is neither a line nor a tone, and breaks into dots in print).
+
 Where the lines thin out, the tones take over (`tone_floor`): a standing thing in the middle distance is never left
 white on a white ground.
 
@@ -32,15 +35,12 @@ import numpy as np
 
 from .far import FAR_M, NEAR_M
 
-#: The thickest line (the deepest boundary), and the thinnest drawn (a pen's finest: a shallower boundary gets no
-#: line, and is told by the tones on its two sides), in mm on the page. Between the thinnest and W_FULL_MM a line
-#: is drawn paler as well as thinner (it dies away, instead of stopping short where a boundary shallows).
+#: The thickest line (the deepest boundary) and the thinnest (a pen's finest), in mm on the page. A boundary whose
+#: depth asks for less than W_DROP_MM gets no line (it is told by the tones on its two sides); from there up to
+#: W_MIN_MM it gets the finest. Every line is black.
 W_MAX_MM = 0.5
-W_FULL_MM = 0.1
-W_MIN_MM = 0.05
-#: A fold between two faces (no depth between them), at the foreground's distance: how deep it counts (a 0.1 mm
-#: line). Farther off it counts less, as its distance grows.
-FOLD_DEPTH = 0.04
+W_MIN_MM = 0.1
+W_DROP_MM = 0.07
 #: Two faces fold if their normals differ by more than this.
 FOLD_MIN_DEG = 30.0
 #: The foreground's distance and the deepest boundaries' are kept within these (m): nearer, a boundary is as deep
@@ -57,6 +57,9 @@ FADE_FROM = 2.0
 #: Width = W_MAX × depth^GAMMA (the square root: a boundary a quarter as deep gets half the width, so the middle
 #: depths keep some weight, as a pen's three or four sizes).
 GAMMA = 0.5
+#: A fold between two faces (no depth between them), at the foreground's distance: how deep it counts (the finest
+#: line). Farther off it counts less, as its distance grows.
+FOLD_DEPTH = (W_MIN_MM / W_MAX_MM) ** (1.0 / GAMMA)
 #: A boundary pixel with fewer than this many boundary pixels in the 5 × 5 round it is a speck (a face smaller
 #: than a pixel), not a line.
 SPECK_UNDER = 4
@@ -173,43 +176,35 @@ def fold_mm() -> float:
     return W_MAX_MM * FOLD_DEPTH**GAMMA
 
 
-def widths(depth: np.ndarray, px_per_mm: float) -> tuple[np.ndarray, np.ndarray]:
-    """Each boundary pixel's line width in pixels (0: no line), and how black it is drawn (1, or paler as the width
-    comes down from W_FULL_MM to W_MIN_MM)."""
+def widths(depth: np.ndarray, px_per_mm: float) -> np.ndarray:
+    """Each boundary pixel's line width in pixels (0: no line): as its depth asks, no thinner than the finest, and
+    none where the depth asks for under W_DROP_MM."""
     mm = W_MAX_MM * np.power(depth, GAMMA, dtype=np.float32)
-    black = np.clip((mm - W_MIN_MM) / (W_FULL_MM - W_MIN_MM), 0.0, 1.0).astype(np.float32)
-    return np.where(black > 0, mm * px_per_mm, 0.0).astype(np.float32), black
+    return np.where(mm >= W_DROP_MM, np.maximum(mm, W_MIN_MM) * px_per_mm, 0.0).astype(np.float32)
 
 
-def stroke(width: np.ndarray, black: np.ndarray | None = None) -> np.ndarray:
-    """The ink (0–1) of lines `width` pixels wide centred on the pixels where width > 0: round, their edges
-    smooth, a line thinner than a pixel drawn as a paler one; `black`: how black each line pixel's line is."""
-    if black is None:
-        black = np.ones(width.shape, dtype=np.float32)
+def stroke(width: np.ndarray) -> np.ndarray:
+    """The ink (0–1) of black lines `width` pixels wide centred on the pixels where width > 0: round, their edges
+    smooth; a line thinner than a pixel covers that share of its pixel (the picture is too coarse for it)."""
     half = width / 2.0
-    # A line thinner than a pixel covers that share of its pixel.
-    ink = np.where((width > 0) & (width < 1), width * black, 0.0).astype(np.float32)
+    ink = np.where((width > 0) & (width < 1), width, 0.0).astype(np.float32)
     wide = width >= 1
     v = np.where(wide, half, -np.inf).astype(np.float32)
     top = float(half.max()) if half.size else 0.0
     if top >= 0.5:
         # Each pixel's best (half width − distance) over the line pixels round it (a chamfer: 1 along the rows and
-        # columns, √2 across), so a line is as wide as its own boundary is deep; and that line's blackness with it.
-        shade = np.where(wide, black, 0.0).astype(np.float32)
+        # columns, √2 across), so a line is as wide as its own boundary is deep.
         steps = [(dy, dx, np.float32(1.0)) for dy, dx in _SHIFTS]
         steps += [(dy, dx, np.float32(math.sqrt(2.0))) for dy, dx in ((1, 1), (1, -1), (-1, 1), (-1, -1))]
         h, w = width.shape
         for _ in range(int(math.ceil(top + 0.5))):
-            best, best_shade = v.copy(), shade.copy()
+            best = v.copy()
             for dy, dx, cost in steps:
                 to = (slice(max(-dy, 0), h - max(dy, 0)), slice(max(-dx, 0), w - max(dx, 0)))
                 frm = (slice(max(dy, 0), h - max(-dy, 0)), slice(max(dx, 0), w - max(-dx, 0)))
-                reached = v[frm] - cost
-                better = reached > best[to]
-                np.copyto(best[to], reached, where=better)
-                np.copyto(best_shade[to], shade[frm], where=better)
-            v, shade = best, best_shade
-        ink = np.maximum(ink, np.clip(v + 0.5, 0.0, 1.0) * shade)
+                np.maximum(best[to], v[frm] - cost, out=best[to])
+            v = best
+        ink = np.maximum(ink, np.clip(v + 0.5, 0.0, 1.0))
     return ink
 
 
@@ -246,13 +241,13 @@ def boundary_lines(
     depth, d_ref, deepest = boundary_depths(z, thing, normal, soft, d_ref, deepest, ground)
     if flat is not None:
         depth[flat] = 0.0
-    width, black = widths(depth, px_per_mm * by)
-    drawn = stroke(width, black)
+    width = widths(depth, px_per_mm * by)
+    drawn = stroke(width)
     info = {
         "foregroundM": round(d_ref, 2),
         "deepestM": round(deepest, 2),
         "inkShare": round(float(drawn.mean()), 4),
-        "bands": bands_report(width, black, z, thing),
+        "bands": bands_report(width, z, thing),
         "widthsMm": widths_report(width / (px_per_mm * by), z),
     }
     return shrink(drawn, by), info
@@ -277,12 +272,12 @@ def widths_report(mm: np.ndarray, z: np.ndarray) -> dict:
     return out
 
 
-def bands_report(width: np.ndarray, black: np.ndarray, z: np.ndarray, thing: np.ndarray) -> dict:
+def bands_report(width: np.ndarray, z: np.ndarray, thing: np.ndarray) -> dict:
     """How much of each distance band is inked by its own boundaries' lines (near: up to 25 m; middle: up to 250 m;
-    far: beyond): the lines' area (each boundary pixel's width × its blackness) over the band's, for checking that
-    lines thin out with distance. (A near thing's line before a far backdrop is the near band's.)"""
+    far: beyond): the lines' area (each boundary pixel's width) over the band's, for checking that lines thin out
+    with distance. (A near thing's line before a far backdrop is the near band's.)"""
     out = {}
-    area = width * black
+    area = width
     for name, (lo, hi) in _bands().items():
         where = thing & (z >= lo) & (z < hi)
         # A band with next to nothing in it (a sliver at the picture's edge) tells nothing.

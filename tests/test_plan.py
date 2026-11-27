@@ -69,3 +69,23 @@ def test_a_building_looked_up_at_keeps_a_building_s_size():
     box, target = tower["placed"]["boxPx"], tower["placed"]["targetPx"]
     assert all(abs(a - b) < 8 for a, b in zip(box[:3], target[:3])) and box[3] > target[3]
     assert any("足もとがコマに出ていない" in n for n in p["notes"])
+
+
+def test_a_development_is_drawn_at_300_dpi_whatever_the_instruction_s_dpi():
+    """A name written out at 150 dpi: the Blockout's preview keeps to it, the development draws its box at 300 dpi
+    (a 0.1 mm line is under a pixel at 150) and says so; the targets stay in the instruction's pixels."""
+    from name_blockout.plan import build_develop_plan
+
+    data = read_instruction(EXAMPLE)
+    shot = json.loads(json.dumps(data["shots"][0]))
+    shot["frame"] = {**shot["frame"], "dpi": 150}
+    shot["frame"].pop("sizePx", None)
+    preview = build_plan(data, shot, EXAMPLE, 300)
+    assert preview["render"]["dpi"] == 150
+    develop = build_develop_plan(data, shot, EXAMPLE)
+    assert develop["frame"]["dpi"] == 150 and develop["render"]["dpi"] == 300
+    assert all(abs(a - 2 * b) <= 1 for a, b in zip(develop["render"]["sizePx"], develop["frame"]["sizePx"]))
+    assert develop["targets"]["sizePx"] == develop["frame"]["sizePx"]
+    assert any("150" in n and "300dpi で描きます" in n for n in develop["notes"])
+    # At the instruction's own dpi or under it nothing is said.
+    assert not any("dpi で描きます" in n for n in build_develop_plan(data, data["shots"][0], EXAMPLE)["notes"])

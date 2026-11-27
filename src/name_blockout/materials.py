@@ -42,7 +42,14 @@ LIBRARY = {
         Material("木", 0.45, 0.7, 0.2, 0.5, lines="detail", note="木目を線で。板の継ぎ目"),
         Material("金属", 0.55, 0.3, 0.15, 0.5, note="映り込みは白抜きの帯で"),
         Material("トタン", 0.5, 0.6, 0.15, 0.45, lines="detail", note="波板の筋を線で"),
-        Material("ガラス", 0.3, 0.05, 0.3, 0.6, note="映り込みの斜めの白抜き。夜は内側の明かり"),
+        Material(
+            "ガラス",
+            0.3,
+            0.05,
+            0.3,
+            0.6,
+            note="昼に外から見る窓は濃く、室内から見る窓は白く（seen）。映り込みの斜めの白抜き。夜は内側の明かり",
+        ),
         Material("瓦", 0.35, 0.8, 0.35, 0.6, lines="detail", note="瓦の段を線で"),
         Material("アスファルト", 0.25, 0.95, 0.1, 0.4, note="白線は白抜き。一面を濃く塗らない"),
         Material("白地", 0.9, 1.0, 0.0, 0.25, note="地面・床は白地のまま、影だけ薄いトーン。目地や舗装の継ぎ目は線で"),
@@ -54,6 +61,24 @@ LIBRARY = {
     )
 }
 DEFAULT = "白壁"
+
+#: Glass is as dark as what shows through it. By day from outside, the room behind it is dark: a dark tone in the
+#: light, all but black in the shade (under the eaves), so a house's windows read as its dark shapes against the
+#: white walls and roofs. By day from inside, the daylight outside is the brightest thing in the room: almost
+#: white. (At dawn, dusk and night the library's own tones stay: who lights which window is the author's to say.)
+GLASS = "ガラス"
+GLASS_BY_DAY = {"outdoor": (0.7, 0.9), "indoor": (0.05, 0.2)}
+NO_DAYLIGHT = ("dawn", "dusk", "night")
+
+
+def seen(material: dict, setting: str | None, time_of_day: str | None) -> dict:
+    """A material's tones as they show in this light: glass by day by the side it is seen from; the rest as the
+    library has them."""
+    if material.get("name") != GLASS or material.get("beta") or time_of_day in NO_DAYLIGHT:
+        return material
+    tones = GLASS_BY_DAY.get(setting or "outdoor")
+    return {**material, "tone": tones[0], "shadowTone": tones[1]} if tones else material
+
 
 #: Words in a thing's name → a material (the longest word found wins).
 GUESSES = {

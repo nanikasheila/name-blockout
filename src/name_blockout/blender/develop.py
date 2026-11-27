@@ -37,7 +37,7 @@ import numpy as np
 from mathutils import Vector
 
 from ..lines import boundary_lines, tone_floor
-from ..materials import DEFAULT, LIBRARY
+from ..materials import DEFAULT, LIBRARY, seen
 from .picture import load as _load
 from .picture import save as _save
 from .render import inner_px, line_px, render_passes, setup
@@ -71,12 +71,15 @@ FACE_AWAY = -0.02
 OVERHEAD_DEG = 70.0
 #: A surface counts as looking up (a floor, the ground) when its normal's z is above this.
 UP_NORMAL = 0.9
-#: Heights within a joint's reach differing more than this (m) make it a step's edge, drawn black.
-STEP_M = 0.03
-HEIGHT_OFFSET = 1000.0
-#: The joints on such a surface: their grey and how much of their line is kept.
-JOINT_GREY = 0.35
-JOINT_ALPHA = 0.7
+#: A face looking up in the light is the lightest of a thing's three (top, lit side, shadow side): its tone is this
+#: much less dense (a concrete roof's top comes out white, as the ground does; a tiled roof keeps a lighter tone).
+#: Tones from TOP_KEEPS up stay as they are (a solar panel's dark cells), and so do a crown's lumps.
+TOP_LIGHTER = 0.15
+TOP_KEEPS = 0.5
+#: The texture lines (a floor's joints, a wall's boards) are drawn up to this many foregrounds off, ending within
+#: TEXTURE_END of that distance: farther off they would close up into a grey.
+TEXTURE_REACH = 4.0
+TEXTURE_END = 0.1
 #: How far under a place's lowest surface the light's ground lies (m).
 LIGHT_GROUND_BELOW = 0.05
 #: Under the ceiling's light, a place's faces this high above the floor under the camera (m) are the ceiling (and
@@ -283,9 +286,11 @@ def _over(top: np.ndarray, bottom: np.ndarray) -> np.ndarray:
 def _set_materials(built: dict, plan: dict, which: str, ground) -> None:
     """Every thing as its material's flat tone (`which`: "tone" lit, "shadowTone" in shadow; ベタ black)."""
     materials = plan["develop"]["materials"]
+    lighting = plan["develop"]["lighting"]
 
     def grey(m):
-        # A tone's density is how dark it shows: 1 − density on the screen.
+        # A tone's density is how dark it shows: 1 − density on the screen (glass: as this light shows it).
+        m = seen(m, lighting.get("setting"), lighting.get("timeOfDay"))
         return 0.0 if m["beta"] else _linear(1.0 - m[which])
 
     for ident, objs in list(built["objects"].items()) + [(f"figure:{k}", v) for k, v in built["figures"].items()]:
@@ -386,7 +391,10 @@ def develop_passes(plan: dict, built: dict, out_dir: Path, samples: int = 16) ->
     # Where the lines thin out with distance the tones take over: a standing thing there (not the ground or a
     # roof's top, not the backdrop) is given at least a light tone, so its shape reads without a line round it.
     standing = seen & ~backdrop & (normals[..., 2] < UP_NORMAL)
-    least_tone = tone_floor(depths[::by, ::by, 0][:h, :w], standing[::by, ::by][:h, :w], line_info["foregroundM"])
+    distance = depths[::by, ::by, 0][:h, :w].copy()
+    least_tone = tone_floor(distance, standing[::by, ::by][:h, :w], line_info["foregroundM"])
+    # The tops in the light (not a crown's lumps), for the tones below.
+    tops = (seen & ~backdrop & ~standing & (depths[..., 1] < 0.5))[::by, ::by][:h, :w].copy()
     del depths, normals, seen, backdrop, lot, standing
 
     # 線画: the texture lines (marked edges, the ground's grid) by Freestyle, fading with distance, without the
@@ -457,15 +465,7 @@ def develop_passes(plan: dict, built: dict, out_dir: Path, samples: int = 16) ->
     lit_tones = _render(out_dir / "_lit.png", 4)
     _set_materials(built, plan, "shadowTone", ground)
     shadow_tones = _render(out_dir / "_shadow.png", 4)
-    # Which way each pixel's surface looks: the joints of a floor or a lot (lines with surface looking up on both
-    # sides) are drawn thin and grey; a step's edge, a wall's foot and every outline stay black.
-    layer.material_override = _facing_up()
-    facing = _render(out_dir / "_up.png", 1)
-    up = (facing[..., 3] > 0.5) & (facing[..., 0] > _srgb(UP_NORMAL))
-    # …and how high each pixel's surface is: a step's edge has up on both sides too, at two heights.
-    layer.material_override = _height()
-    height = _render(out_dir / "_height.exr", 1, exact=True)[..., 0] - HEIGHT_OFFSET
-    # …and which solar cell (a face of the model) each pixel shows: light joints between them.
+    # Which solar cell (a face of the model) each pixel shows: light joints between them.
     cell_ids = None
     if any(o.get("nb_cell_faces") for o in built.get("place", [])):
         layer.material_override = _face_value("nb_cell")
@@ -474,6 +474,8 @@ def develop_passes(plan: dict, built: dict, out_dir: Path, samples: int = 16) ->
 
     # 3. Put together; at dawn, dusk and night the sky is toned too.
     tone = np.where(shadow[..., None], shadow_tones, lit_tones)
+    if sun is not None:
+        tone[..., :3] = top_lighter(tone[..., :3], tops & ~shadow & (tone[..., 3] > 0.5))
     tone[..., :3] = np.minimum(tone[..., :3], (1.0 - least_tone)[..., None])
     if cell_ids is not None:
         gaps = cell_gaps(cell_ids, CELL_MIN_PX)
@@ -498,7 +500,7 @@ def develop_passes(plan: dict, built: dict, out_dir: Path, samples: int = 16) ->
     dpi = plan["render"]["dpi"]
     reach = max(2, round(line_px(dpi) * 1.2))
     if "線画" in files:
-        lines = grey_joints(lines, up, reach, height, thin=int(inner_px(dpi) // 3), tip=math.ceil(line_px(dpi) / 2) + 1)
+        lines[..., 3] *= texture_reach(distance, line_info["foregroundM"])
         black = np.zeros((h, w, 4), dtype=np.float32)
         black[..., 3] = ink[:h, :w]
         lines = _over(black, lines)
@@ -507,7 +509,7 @@ def develop_passes(plan: dict, built: dict, out_dir: Path, samples: int = 16) ->
     check = shadow_check(plan, built, shadow, lit, sun)
     check["lines"] = line_info
     if not os.environ.get(KEEP_ENV):
-        for name in ("_lit.png", "_shadow.png", "_up.png", "_height.exr", "_depth.exr", "_normal.exr", "_cells.exr"):
+        for name in ("_lit.png", "_shadow.png", "_depth.exr", "_normal.exr", "_cells.exr"):
             (out_dir / name).unlink(missing_ok=True)
     if grid is not None:
         grid.hide_render = False
@@ -685,23 +687,6 @@ def tone_far() -> None:
             o.pass_index = BACKDROP_INDEX
 
 
-def _facing_up():
-    """A material showing how much each surface looks up (its normal's z, 0 for sideways or down), flat."""
-    mat = bpy.data.materials.get(PREFIX + "facing_up") or bpy.data.materials.new(PREFIX + "facing_up")
-    mat.use_nodes = True
-    nodes, links = mat.node_tree.nodes, mat.node_tree.links
-    nodes.clear()
-    out = nodes.new("ShaderNodeOutputMaterial")
-    geo = nodes.new("ShaderNodeNewGeometry")
-    split = nodes.new("ShaderNodeSeparateXYZ")
-    emit = nodes.new("ShaderNodeEmission")
-    links.new(geo.outputs["True Normal"], split.inputs[0])
-    links.new(split.outputs["Z"], emit.inputs["Strength"])
-    emit.inputs["Color"].default_value = (1.0, 1.0, 1.0, 1.0)
-    links.new(emit.outputs[0], out.inputs[0])
-    return mat
-
-
 def majority(mask: np.ndarray, r: int) -> np.ndarray:
     """Each pixel set as most of the (2r+1)² square round it is (speckles go, edges stay)."""
     padded = np.pad(mask.astype(np.int32), r + 1, mode="edge")
@@ -732,27 +717,6 @@ def erode(mask: np.ndarray, r: int) -> np.ndarray:
     return out
 
 
-def _height():
-    """A material showing each surface's height (world z + HEIGHT_OFFSET, to be read back exactly)."""
-    mat = bpy.data.materials.get(PREFIX + "height") or bpy.data.materials.new(PREFIX + "height")
-    mat.use_nodes = True
-    nodes, links = mat.node_tree.nodes, mat.node_tree.links
-    nodes.clear()
-    out = nodes.new("ShaderNodeOutputMaterial")
-    geo = nodes.new("ShaderNodeNewGeometry")
-    split = nodes.new("ShaderNodeSeparateXYZ")
-    add = nodes.new("ShaderNodeMath")
-    add.operation = "ADD"
-    add.inputs[1].default_value = HEIGHT_OFFSET
-    emit = nodes.new("ShaderNodeEmission")
-    links.new(geo.outputs["Position"], split.inputs[0])
-    links.new(split.outputs["Z"], add.inputs[0])
-    links.new(add.outputs[0], emit.inputs["Strength"])
-    emit.inputs["Color"].default_value = (1.0, 1.0, 1.0, 1.0)
-    links.new(emit.outputs[0], out.inputs[0])
-    return mat
-
-
 def _spread(values: np.ndarray, r: int, pick) -> np.ndarray:
     """Each pixel's highest (pick=np.maximum) or lowest (np.minimum) value within r pixels (a square, two passes)."""
     out = values.copy()
@@ -773,47 +737,20 @@ def grow(mask: np.ndarray, r: int) -> np.ndarray:
     return _spread(mask, r, np.maximum)
 
 
-def grey_joints(
-    lines: np.ndarray,
-    up: np.ndarray,
-    reach: int,
-    height: np.ndarray | None = None,
-    thin: int = 0,
-    tip: int = 0,
-):
-    """The lines lying inside a surface that looks up (a floor's boards, a lot's paving: up on every side within
-    `reach` pixels, the line's own pixels counted as up, and all at one height: a step's edge is not a joint) drawn
-    grey, lighter and thinner (their middle `thin` pixels in from each side kept).
-
-    A joint runs up to a wall's foot or a step's edge: its last `reach` pixels there see the wall, so with `tip` (a
-    little over half an outline's width) a joint's grey goes on along it while the line is flat and up within `tip`
-    pixels, stopping at the black outline it meets (else a black whisker at each joint's end)."""
-    drawn = lines[..., 3] > 0.05
-
-    def flat(r: int) -> np.ndarray:
-        ok = erode(up | drawn, r) & drawn
-        if height is not None:
-            seen = up & np.isfinite(height)
-            hi = _spread(np.where(seen, height, -np.inf), r, np.maximum)
-            lo = _spread(np.where(seen, height, np.inf), r, np.minimum)
-            ok &= (hi - lo) < STEP_M
-        return ok
-
-    inside = flat(reach)
-    if tip and tip < reach:
-        near = flat(tip)
-        for _ in range(reach):
-            more = grow(inside, 1) & near
-            if not (more & ~inside).any():
-                break
-            inside |= more
-    out = lines.copy()
-    out[inside, :3] = JOINT_GREY
-    out[inside, 3] *= JOINT_ALPHA
-    if thin:
-        edge = inside & ~erode(drawn, thin)
-        out[edge, 3] = 0.0
+def top_lighter(shown: np.ndarray, tops: np.ndarray) -> np.ndarray:
+    """The tones (as shown: 1 − density) with the faces looking up in the light TOP_LIGHTER less dense; tones from
+    TOP_KEEPS up (and ベタ) stay."""
+    out = shown.copy()
+    light = tops & (shown.min(axis=-1) > 1.0 - TOP_KEEPS)
+    out[light] = np.minimum(1.0, shown[light] + TOP_LIGHTER)
     return out
+
+
+def texture_reach(distance: np.ndarray, foreground: float) -> np.ndarray:
+    """How much of a texture line is kept at each pixel's distance (m): all of it up to TEXTURE_REACH foregrounds
+    off, none a little farther (the lines end there; they are never drawn paler)."""
+    reach = TEXTURE_REACH * foreground
+    return np.clip((reach * (1.0 + TEXTURE_END) - distance) / (reach * TEXTURE_END), 0.0, 1.0).astype(np.float32)
 
 
 #: A ベタ narrower than this many reaches (a dark fascia, a strip of dark glass) keeps its lines black: white lines
