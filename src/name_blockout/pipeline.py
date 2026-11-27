@@ -18,6 +18,7 @@ from .requirement import current, effective, read_requirement
 from .scope import redo_scope
 from .takes import TAKES_DIR, WORK_DIR, add_take, next_take
 from .top import write_top
+from .town import town_words
 from .verify import summary_words, verify
 
 
@@ -145,6 +146,10 @@ def run_blockout(
         work = folder / WORK_DIR / shot["id"] / number
         takes_dir = folder / TAKES_DIR / shot["id"] / number
         built = bscene.build(plan)
+        if built.get("around"):
+            # The town as built: what stands beyond the place's things (the plan had it clear of the author's only).
+            plan["surroundings"] = built["around"]
+            plan["notes"].append(town_words(built["around"]))
         measured = bmeasure.measure(plan, built)
         result = verify(plan, measured)
         write_json(work / "plan.json", plan)

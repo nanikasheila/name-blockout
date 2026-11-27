@@ -202,8 +202,11 @@ def test_answered_questions_are_not_asked_again(tmp_path):
         encoding="utf-8",
         env={**__import__("os").environ, "PYTHONPATH": str(Path(__file__).resolve().parents[1] / "src")},
     )
-    asked = {q["path"] for q in json.loads(out.stdout)["questions"]}
+    told = json.loads(out.stdout)
+    asked = {q["path"] for q in told["questions"]}
     assert first[0]["path"] not in asked
+    # The finding still stands in the instruction as written, and says it was answered.
+    assert [f.get("answered") for f in told["findings"] if f["path"] == first[0]["path"] and "question" in f] == [True]
 
 
 def test_a_height_no_eye_could_be_at_is_not_offered():

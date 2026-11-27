@@ -147,6 +147,29 @@ def test_a_bush_on_the_ground_has_its_outline_though_nothing_is_behind_it():
     assert boundary_depths(z, thing, normal, None, d_ref=35.0, deepest=100.0)[0].max() < FOLD_DEPTH / 2
 
 
+def test_a_natural_thing_has_no_outline_of_its_own_beyond_the_near_band():
+    """A tree before the sky and a house before it, 40 m off: the house keeps its line, the tree is told by its
+    tones (the author: natural things by their shade rather than an outline). Within the near band a tree keeps the
+    finest line for its silhouette, never a thick one."""
+    h, w = 60, 120
+    z = np.full((h, w), 1.0, dtype=np.float32)
+    thing = np.zeros((h, w), dtype=bool)
+    natural = np.zeros((h, w), dtype=bool)
+    thing[10:50, 10:50] = natural[10:50, 10:50] = True  # the tree
+    thing[10:50, 70:110] = True  # the house
+    for near, tree_depth in ((40.0, 0.0), (10.0, FOLD_DEPTH)):
+        z[thing] = near
+        depth, *_ = boundary_depths(z, thing, None, None, d_ref=near, deepest=near, natural=natural)
+        assert depth[10, 30] == approx(tree_depth) and depth[30, 10] == approx(tree_depth)
+        assert depth[10, 90] == 1.0
+    # A house before a tree: the boundary is the house's, and stays.
+    z[thing] = 40.0
+    thing[:, 50:70] = natural[:, 50:70] = True
+    z[:, 50:70] = 60.0
+    depth, *_ = boundary_depths(z, thing, None, None, d_ref=40.0, deepest=60.0, natural=natural)
+    assert depth[30, 70] > 0.0 and depth[30, 49] == 0.0 and depth[30, 50] == 0.0
+
+
 def test_a_thing_thinner_than_its_line_is_drawn_with_the_finest():
     """A wire 3 pixels wide before the sky, in the foreground: its boundary is as deep as any, but a line 0.5 mm
     wide on each side would make it three times as thick as it is. It gets the finest line; a wide thing beside it

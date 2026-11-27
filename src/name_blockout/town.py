@@ -1,0 +1,378 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+"""What lies round a place: a town (市街地), as data (nothing here needs Blender).
+
+A place (a house on its lot, a street corner) ends somewhere, and a picture looking down on it shows the ground
+beyond: white, unless the author says what is there. `shot.surroundings` {"kind": "town"} lays houses there, on
+streets square to the world's axes (so their edges run to the picture's vanishing points), made from a seed: the
+same instruction gives the same town.
+
+- a street every BLOCK_DEEP_M (two rows of plots back to back, each plot's house facing its street) and a cross
+  street at the end of each block (BLOCK_LONG_M, four to six plots); the streets run along the world's X, or its
+  Y, and one of them through a given place, as wide as given (`street`: {"axis", "atM", "widthM"}), so the
+  town's streets carry on the place's own road;
+- on a plot a house (two storeys with a gable roof; some of one storey, some flat-roofed, now and then a block of
+  flats), sometimes a tree in its garden, now and then nothing (a car park, a field);
+- utility poles along the streets.
+
+The town never hides the place: along each direction from the camera it starts beyond the farthest thing the place
+(and the author's own things) has there, a street's width farther; nothing of it stands among the place's things
+(within the outline drawn round them all, a street's width off) or on the place's own lot (`beyond`; a ground of
+the place wider than LOT_MAX_M is land, not a lot: the town stands on it). Nor does it come into the near band
+(NEAR_M from the camera): what stands near, and between the camera and the place, is the author's to put.
+"""
+
+from __future__ import annotations
+
+import math
+import random
+
+from .camera import Camera
+from .far import FAR_M, NEAR_M, view_azimuths
+
+KINDS = ("town", "open")
+KIND_LABELS = {"town": "市街地", "open": "何も置かない（白い地面）"}
+#: A street's width, a plot's depth (street to back fence) and widths, and how many plots make a block.
+STREET_M = 6.0
+PLOT_DEEP_M = 13.0
+BLOCK_LONG_M = 60.0
+BLOCK_PLOTS = (4, 6)
+BLOCK_DEEP_M = 2 * PLOT_DEEP_M + STREET_M
+#: The town is laid out to here (the far band's layers take over beyond), and no more than this many houses,
+#: the nearest first.
+REACH_M = FAR_M
+MAX_HOUSES = 160
+#: Past where the picture's top edge meets the ground, a house this much farther could still show its roof.
+REACH_BEYOND_SEEN_M = 20.0
+#: Nothing of the town stands within this of the place's own lot (its ground, its lawn)…
+GROUND_CLEAR_M = 1.0
+#: …and a ground of the place longer than this is no lot but the land the place was modelled on (a plane out to
+#: the horizon): the town stands on it.
+LOT_MAX_M = 100.0
+AXES = ("X", "Y")
+POLE_EVERY_M = 30.0
+POLE_OFF_STREET_M = 0.4
+POLE_M = 9.5
+#: Directions (degrees) a place's reach is spread over, so a thing's edge keeps a house off it on both sides.
+SPREAD_DEG = 3
+
+
+def seen_reach(camera: Camera) -> float:
+    """How far off the ground the picture shows goes: to where its edges meet the ground (and a little more: a
+    roof stands above its ground), or REACH_M when the horizon is in the picture."""
+    far = 0.0
+    w, h = camera.width, camera.height
+    for i in range(9):
+        for q in ((w * i / 8, 0.0), (0.0, h * i / 8), (float(w), h * i / 8)):
+            p = camera.ground_point(q)
+            if p is None:
+                return REACH_M
+            far = max(far, math.hypot(p[0] - camera.position[0], p[1] - camera.position[1]))
+    return min(REACH_M, far + REACH_BEYOND_SEEN_M)
+
+
+def _rng(seed: int, *keys: int) -> random.Random:
+    value = seed & 0xFFFFFFFF
+    for k in keys:
+        value = (value * 1_000_003 + (k & 0xFFFFFFFF) + 0x9E3779B9) & 0xFFFFFFFFFFFF
+    return random.Random(value)
+
+
+def _row_blocks(seed: int, row: int, x0: float, x1: float):
+    """The blocks of a row between x0 and x1: (block number, its west end, its plots' widths). Blocks stand at a
+    fixed pitch from the row's own start, so a block is the same whatever part of the row is asked for."""
+    # Each row's cross streets are shifted (a town's streets do not all run through), by a seeded amount.
+    shift = _rng(seed, row, 7).uniform(0.0, BLOCK_LONG_M)
+    pitch = BLOCK_LONG_M + STREET_M
+    out = []
+    for k in range(math.floor((x0 - shift) / pitch), math.floor((x1 - shift) / pitch) + 1):
+        rng = _rng(seed, row, k)
+        shares = [rng.uniform(1.0, 1.35) for _ in range(rng.randint(*BLOCK_PLOTS))]
+        out.append((k, shift + k * pitch, [round(BLOCK_LONG_M * v / sum(shares), 2) for v in shares]))
+    return out
+
+
+def _house(rng: random.Random, x0: float, wide: float, street_y: float, faces: int) -> dict | None:
+    """What stands on a plot `wide` across from x0, its street at street_y (to the south when faces is −1); in the
+    town's own frame (its streets along x). sizeM is the house's own: across its front, deep, high."""
+    roll = rng.random()
+    if roll < 0.07:
+        return None  # a car park, a field
+    flats = roll > 0.93 and wide > 12.0
+    if flats:
+        w, d, floors = wide - 2.0, rng.uniform(7.5, 9.0), 3
+        h = floors * 2.9 + 0.3
+        roof = "flat"
+    else:
+        w = wide - rng.uniform(2.6, 4.4)
+        d = rng.uniform(6.8, 9.2)
+        floors = 1 if rng.random() < 0.15 else 2
+        roof = "flat" if rng.random() < 0.12 else "gable"
+        eaves = floors * 2.8 + 0.4
+        h = eaves + (0.3 if roof == "flat" else rng.uniform(1.5, 2.3))
+    back = rng.uniform(2.0, 3.6)  # the front garden
+    cx = x0 + wide / 2 + rng.uniform(-0.5, 0.5)
+    cy = street_y - faces * (back + d / 2)
+    return {
+        "centreM": [round(cx, 2), round(cy, 2), 0.0],
+        "sizeM": [round(w, 2), round(d, 2), round(h, 2)],
+        "front": "-Y" if faces < 0 else "+Y",
+        "roof": roof,
+        "ridge": "along" if w >= d else "across",  # along its front, or from front to back
+        "floors": floors,
+        "wall": rng.choice(("白壁", "白壁", "白壁", "コンクリート", "木")) if not flats else "コンクリート",
+        "top": ("コンクリート" if roof == "flat" else rng.choice(("瓦", "瓦", "トタン"))),
+        "balcony": (not flats) and floors == 2 and rng.random() < 0.45,
+        "seed": rng.randrange(1 << 16),
+    }
+
+
+def street_of(spec: dict | None) -> tuple[str, float, float]:
+    """The town's streets: the axis they run along, where one of them runs through (y for X, x for Y), and how wide
+    they are (the cross streets keep STREET_M)."""
+    street = (spec or {}).get("street") or {}
+    axis = street.get("axis") if street.get("axis") in AXES else "X"
+    return axis, float(street.get("atM") or 0.0), float(street.get("widthM") or STREET_M)
+
+
+def town(camera: Camera, spec: dict | None = None, reach: float | None = None) -> dict:
+    """A town round the camera's view: houses, garden trees and utility poles, within the directions the picture
+    sees and `reach` (default: as far as the picture shows ground). Everything stands on the ground (z 0), square
+    to the world's axes; the streets as `street_of(spec)` says."""
+    spec = spec or {}
+    seed = int(spec.get("seed") or 0)
+    reach = float(spec.get("reachM") or reach or seen_reach(camera))
+    axis, through, wide_street = street_of(spec)
+    deep = 2 * PLOT_DEEP_M + wide_street  # from one street's middle to the next
+    px, py = camera.position[0], camera.position[1]
+    lo, hi = (math.radians(a) for a in view_azimuths(camera, margin_deg=6.0))
+    all_round = hi - lo >= 2 * math.pi - 1e-6
+
+    # The town is laid out in its own frame (u along its streets, v across them, a street's middle on v = 0) and
+    # turned into the world's: u is x and v is y − through, or (streets along Y) u is y and v is x − through.
+    def world(u: float, v: float) -> tuple[float, float]:
+        return (u, v + through) if axis == "X" else (v + through, u)
+
+    pu, pv = (px, py - through) if axis == "X" else (py, px - through)
+    fronts = {-1: "-Y", 1: "+Y"} if axis == "X" else {-1: "-X", 1: "+X"}
+
+    def within(u: float, v: float) -> float | None:
+        x, y = world(u, v)
+        dist = math.hypot(x - px, y - py)
+        if dist > reach:
+            return None
+        if not all_round and dist > 1e-6:
+            a = (math.atan2(y - py, x - px) - lo) % (2 * math.pi)
+            if a > hi - lo:
+                return None
+        return dist
+
+    def at(u: float, v: float) -> list[float]:
+        x, y = world(u, v)
+        return [round(x, 2), round(y, 2), 0.0]
+
+    houses, trees, poles, streets = [], [], [], []
+    row0 = math.floor((pv - reach) / deep) - 1
+    row1 = math.floor((pv + reach) / deep) + 1
+    other = "Y" if axis == "X" else "X"
+    for row in range(row0, row1 + 1):
+        # The row's street runs along u with its middle on the row's line; the row's two lines of plots face it
+        # (from its far side) and the next row's street.
+        south = row * deep + wide_street / 2
+        north = (row + 1) * deep - wide_street / 2
+        streets.append(
+            {
+                "axis": axis,
+                "atM": round(row * deep + through, 2),
+                "fromM": round(pu - reach, 1),
+                "toM": round(pu + reach, 1),
+                "widthM": wide_street,
+            }
+        )
+        for block, x_start, plots in _row_blocks(seed, row, pu - reach, pu + reach):
+            # The cross street at the block's end, from this row's street to the next.
+            streets.append(
+                {
+                    "axis": other,
+                    "atM": round(x_start + BLOCK_LONG_M + STREET_M / 2, 2),
+                    "fromM": round(row * deep + through, 2),
+                    "toM": round((row + 1) * deep + through, 2),
+                    "widthM": STREET_M,
+                }
+            )
+            for side, (street_y, faces) in enumerate(((south, -1), (north, 1))):
+                x = x_start
+                for i, wide in enumerate(plots):
+                    rng = _rng(seed, row, block, side * 100 + i)
+                    house = _house(rng, x, wide, street_y, faces)
+                    centre_y = street_y - faces * PLOT_DEEP_M / 2
+                    if house is not None:
+                        dist = within(house["centreM"][0], house["centreM"][1])
+                        if dist is not None:
+                            house = {**house, "centreM": at(*house["centreM"][:2]), "front": fronts[faces]}
+                            # Not in the near band: what stands near is drawn in the name, and the author's.
+                            if min(math.hypot(x - px, y - py) for x, y in rect(house)) > NEAR_M:
+                                houses.append({"id": f"r{row}b{block}s{side}p{i}", **house, "distanceM": round(dist, 1)})
+                    if rng.random() < (0.35 if house else 0.5):
+                        # A garden tree at the back of the plot (or in the open plot).
+                        tx = x + rng.uniform(1.5, wide - 1.5)
+                        ty = street_y - faces * (PLOT_DEEP_M - rng.uniform(1.2, 2.2)) if house else centre_y
+                        if (within(tx, ty) or 0.0) > NEAR_M:
+                            height = rng.uniform(3.0, 6.5)
+                            form = "conifer" if rng.random() < 0.15 else "broad"
+                            trees.append(
+                                {
+                                    "centreM": at(tx, ty),
+                                    "heightM": round(height, 2),
+                                    "radiusM": round(height * (0.2 if form == "conifer" else rng.uniform(0.3, 0.42)), 2),
+                                    "form": form,
+                                    "seed": rng.randrange(1 << 16),
+                                }
+                            )
+                    x += wide
+        # Poles along the street's far side, just off it (at the plots' edge, not in the roadway).
+        first = math.ceil((pu - reach) / POLE_EVERY_M)
+        for n in range(first, math.floor((pu + reach) / POLE_EVERY_M) + 1):
+            u, v = n * POLE_EVERY_M + (row % 3) * 4.0, south + POLE_OFF_STREET_M
+            if (within(u, v) or 0.0) > NEAR_M:
+                poles.append({"centreM": at(u, v), "heightM": POLE_M})
+    houses.sort(key=lambda b: (b["distanceM"], b["id"]))
+    return {
+        "kind": "town",
+        "seed": seed,
+        "reachM": round(reach, 1),
+        "streetM": wide_street,
+        "street": {"axis": axis, "atM": through, "widthM": wide_street},
+        "streets": streets,
+        "houses": houses[:MAX_HOUSES],
+        "trees": trees[: MAX_HOUSES * 2],
+        "poles": poles[:MAX_HOUSES],
+    }
+
+
+def rect(house: dict, margin: float = 0.0) -> list[list[float]]:
+    """A house's footprint (its four corners), `margin` wider all round."""
+    (x, y, _), (w, d, _) = house["centreM"], house["sizeM"]
+    if house["front"].endswith("X"):
+        w, d = d, w
+    a, b = w / 2 + margin, d / 2 + margin
+    return [[x - a, y - b], [x + a, y - b], [x + a, y + b], [x - a, y + b]]
+
+
+def place_reach(points, origin) -> dict[int, float]:
+    """How far the place goes, by direction from `origin` (whole degrees from +X): the farthest of its points
+    there, spread over SPREAD_DEG to each side."""
+    far: dict[int, float] = {}
+    for x, y in points:
+        dx, dy = x - origin[0], y - origin[1]
+        dist = math.hypot(dx, dy)
+        if dist < 1e-6:
+            continue
+        a = int(math.floor(math.degrees(math.atan2(dy, dx)))) % 360
+        for k in range(a - SPREAD_DEG, a + SPREAD_DEG + 1):
+            far[k % 360] = max(far.get(k % 360, 0.0), dist)
+    return far
+
+
+def outline(points) -> list[tuple[float, float]]:
+    """The outline drawn round all of `points` (their convex hull, counter-clockwise; fewer than three corners for
+    points in a line)."""
+    pts = sorted({(float(x), float(y)) for x, y in points})
+    if len(pts) < 3:
+        return pts
+
+    def turn(o, a, b) -> float:
+        return (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
+
+    lower: list[tuple[float, float]] = []
+    for q in pts:
+        while len(lower) >= 2 and turn(lower[-2], lower[-1], q) <= 0:
+            lower.pop()
+        lower.append(q)
+    upper: list[tuple[float, float]] = []
+    for q in reversed(pts):
+        while len(upper) >= 2 and turn(upper[-2], upper[-1], q) <= 0:
+            upper.pop()
+        upper.append(q)
+    return lower[:-1] + upper[:-1]
+
+
+def off_outline(hull: list[tuple[float, float]], x: float, y: float) -> float:
+    """How far (x, y) is outside an outline (0 or less: inside it). Past a corner it is told a little nearer than
+    it is (by the edges' lines), which errs to keeping clear."""
+    if not hull:
+        return math.inf
+    if len(hull) < 3:
+        (ax, ay), (bx, by) = hull[0], hull[-1]
+        dx, dy = bx - ax, by - ay
+        t = 0.0 if dx == dy == 0 else max(0.0, min(1.0, ((x - ax) * dx + (y - ay) * dy) / (dx * dx + dy * dy)))
+        return math.hypot(x - ax - t * dx, y - ay - t * dy)
+    far = -math.inf
+    for (ax, ay), (bx, by) in zip(hull, hull[1:] + hull[:1]):
+        dx, dy = bx - ax, by - ay
+        far = max(far, ((x - ax) * dy - (y - ay) * dx) / math.hypot(dx, dy))
+    return far
+
+
+def _starts(far: dict[int, float], x: float, y: float, origin) -> float:
+    """Where the town may start in the direction of (x, y): past the place there; where the place has nothing in
+    that direction, past what it has in the nearest direction where it has something."""
+    if not far:
+        return 0.0
+    a = int(math.floor(math.degrees(math.atan2(y - origin[1], x - origin[0])))) % 360
+    for step in range(181):
+        found = [far[k % 360] for k in (a - step, a + step) if k % 360 in far]
+        if found:
+            return max(found)
+    return 0.0
+
+
+def beyond(made: dict, points, origin, gap: float | None = None, grounds=()) -> dict:
+    """The town with only what stands beyond the place (its things' `points`, x and y) as seen from `origin` (the
+    camera): a house is kept when all its corners are past the place in their directions by `gap` (a street's
+    width); trees and poles by where they stand. Nothing stands among the place's things (inside the outline round
+    all its points, or within `gap` of it: a yard behind a wall is the place's, though it lies beyond the wall), nor
+    on the place's own lots (`grounds`: its grounds, each as x0, y0, x1, y1; one longer than LOT_MAX_M is land the
+    town may stand on). `dropped` counts what was left out."""
+    gap = made.get("streetM", STREET_M) if gap is None else gap
+    far = place_reach(points, origin)
+    hull = outline(points)
+    grounds = [g for g in grounds if max(g[2] - g[0], g[3] - g[1]) <= LOT_MAX_M]
+
+    def past(x: float, y: float) -> bool:
+        if any(
+            x0 - GROUND_CLEAR_M < x < x1 + GROUND_CLEAR_M and y0 - GROUND_CLEAR_M < y < y1 + GROUND_CLEAR_M for x0, y0, x1, y1 in grounds
+        ):
+            return False
+        if off_outline(hull, x, y) <= gap:
+            return False
+        return math.hypot(x - origin[0], y - origin[1]) > _starts(far, x, y, origin) + gap
+
+    def clear(house: dict) -> bool:
+        if not all(past(x, y) for x, y in rect(house)):
+            return False
+        # …and no corner of the place's outline inside the house's own plot (the house and `gap` round it).
+        (x0, y0), _, (x1, y1), _ = rect(house, gap)
+        return not any(x0 < x < x1 and y0 < y < y1 for x, y in hull)
+
+    houses = [h for h in made["houses"] if clear(h)]
+    trees = [t for t in made["trees"] if past(t["centreM"][0], t["centreM"][1])]
+    poles = [p for p in made["poles"] if past(p["centreM"][0], p["centreM"][1])]
+    dropped = {
+        "houses": made.get("dropped", {}).get("houses", 0) + len(made["houses"]) - len(houses),
+        "trees": made.get("dropped", {}).get("trees", 0) + len(made["trees"]) - len(trees),
+        "poles": made.get("dropped", {}).get("poles", 0) + len(made["poles"]) - len(poles),
+    }
+    return {**made, "houses": houses, "trees": trees, "poles": poles, "dropped": dropped}
+
+
+def town_words(made: dict) -> str:
+    """One line on the town as made."""
+    if not made["houses"]:
+        return "まわりは市街地: 絵に見える範囲に家は入りませんでした（場所の向こう側が絵に出ていないか、場所の敷地が絵の端まで続いている）"
+    near, far = made["houses"][0]["distanceM"], made["houses"][-1]["distanceM"]
+    street = made.get("street") or {"axis": "X", "atM": 0.0}
+    runs = f"道は {street['axis']} の向き（幅 {made['streetM']:g} m）で、{'y' if street['axis'] == 'X' else 'x'} = {street['atM']:g} を 1 本が通る"
+    return (
+        f"まわりは市街地: 家 {len(made['houses'])} 軒（カメラから {near:.0f}〜{far:.0f} m）"
+        f"・庭木 {len(made['trees'])} 本・電柱 {len(made['poles'])} 本。{runs}。場所の物より向こう、場所の物の囲みと敷地の外にだけ置く（道幅 {made['streetM']:g} m あけて、近景 {NEAR_M:g} m の中には置かない）"
+    )

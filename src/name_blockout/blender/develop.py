@@ -41,7 +41,7 @@ from ..materials import DEFAULT, LIBRARY, seen
 from .picture import load as _load
 from .picture import save as _save
 from .render import inner_px, line_px, render_passes, setup
-from .scene import PREFIX, collection
+from .scene import GROUND_BELOW_PLACE_M, PREFIX, collection, ground_level, mark_foliage
 
 #: Set (to anything) to keep the working passes beside the pictures (_depth.exr, _normal.exr…), for looking into
 #: how a line or a tone came out.
@@ -50,6 +50,8 @@ KEEP_ENV = "NAME_BLOCKOUT_KEEP"
 #: ground's (the light's ground, a place's lot or lawn: no line where it ends against the sky far off).
 BACKDROP_INDEX = 1
 GROUND_INDEX = 2
+#: …and natural things' (trees, bushes: told by their shade, no outline of their own).
+NATURAL_INDEX = 3
 #: Under this share of the light a white face gets facing the sun, a pixel is in shadow.
 SHADOW_SHARE = 0.12
 SHADOW_RGBA = (0.25, 0.25, 0.3, 0.55)
@@ -80,8 +82,6 @@ TOP_KEEPS = 0.5
 #: TEXTURE_END of that distance: farther off they would close up into a grey.
 TEXTURE_REACH = 4.0
 TEXTURE_END = 0.1
-#: How far under a place's lowest surface the light's ground lies (m).
-LIGHT_GROUND_BELOW = 0.05
 #: Under the ceiling's light, a place's faces this high above the floor under the camera (m) are the ceiling (and
 #: what is over it): they let the light through.
 CEILING_OVER_FLOOR = 2.0
@@ -309,7 +309,7 @@ def _set_materials(built: dict, plan: dict, which: str, ground) -> None:
             obj.data.materials.clear()
             obj.data.materials.append(own or mat)
     # A place's meshes: each material slot as the library material its names suggest (or the author's, by name).
-    for obj in built.get("place", []):
+    for obj in list(built.get("place", [])) + list(built.get("surroundings", [])):
         guessed = obj.get("nb_place_materials") or []
         slots = obj.material_slots
         if not slots:
@@ -354,8 +354,14 @@ def develop_passes(plan: dict, built: dict, out_dir: Path, samples: int = 16) ->
     # Under a place, below its lowest surface: on the same plane as a floor of the place the two would shade each
     # other black (as the grid does, below), and where the place has ground of its own that takes the shadows.
     place = built.get("place") or []
-    under = min((min((o.matrix_world @ Vector(c)).z for c in o.bound_box) for o in place), default=0.0)
-    ground = add_light_ground(plan, min(0.0, under - LIGHT_GROUND_BELOW) if place else 0.0)
+    level = ground_level(place)
+    ground = add_light_ground(plan, level)
+    for obj in place:
+        # A place's ground lying on the ground round it (a lot, a road: flat, at its lowest) casts no shadow: its
+        # edge would draw a strip of shade on the light's ground just under it.
+        if obj.get("nb_ground") and max((obj.matrix_world @ Vector(c)).z for c in obj.bound_box) <= level + 2 * GROUND_BELOW_PLACE_M:
+            obj.visible_shadow = False
+            obj["nb_noshadow"] = True
     sun = add_sun(light)
     keep_world = scene.world
 
@@ -369,6 +375,19 @@ def develop_passes(plan: dict, built: dict, out_dir: Path, samples: int = 16) ->
     for obj in place:
         if obj.get("nb_ground"):
             obj.pass_index = GROUND_INDEX
+    for obj in scene.objects:
+        if obj.get("nb_natural") and obj.pass_index == 0:
+            obj.pass_index = NATURAL_INDEX
+            if obj.type == "MESH":
+                # All of it (a trunk's edges, a rock's facets as much as a crown's lumps): no folds, no texture
+                # lines. A made part of it (the pot of a potted plant) stays as it is, and keeps its lines.
+                slots = list(obj.get("nb_natural_slots") or [])
+                if slots and not all(slots):
+                    marked = obj.data.attributes.get("freestyle_face")
+                    already = [m.value for m in marked.data] if marked else [False] * len(obj.data.polygons)
+                    mark_foliage(obj, [was or slots[min(p.material_index, len(slots) - 1)] for was, p in zip(already, obj.data.polygons)])
+                else:
+                    mark_foliage(obj)
     grid = bpy.data.collections.get(PREFIX + "ground")
     if grid is not None:
         grid.hide_render = True
@@ -385,9 +404,20 @@ def develop_passes(plan: dict, built: dict, out_dir: Path, samples: int = 16) ->
     seen = depths[..., 3] > 0.5
     backdrop = seen & (np.abs(depths[..., 2] - BACKDROP_INDEX) < 0.5)
     lot = seen & (np.abs(depths[..., 2] - GROUND_INDEX) < 0.5)
+    # A natural thing's natural faces (marked above): its made parts are lined as any made thing.
+    natural = seen & (np.abs(depths[..., 2] - NATURAL_INDEX) < 0.5) & (depths[..., 1] > 0.5)
     ink, line_info = boundary_lines(
-        depths[..., 0], seen, normals, depths[..., 1] > 0.5, plan["render"]["dpi"] / 25.4, by, flat=backdrop, ground=lot
+        depths[..., 0],
+        seen,
+        normals,
+        depths[..., 1] > 0.5,
+        plan["render"]["dpi"] / 25.4,
+        by,
+        flat=backdrop,
+        ground=lot,
+        natural=natural,
     )
+    del natural
     # Where the lines thin out with distance the tones take over: a standing thing there (not the ground or a
     # roof's top, not the backdrop) is given at least a light tone, so its shape reads without a line round it.
     standing = seen & ~backdrop & (normals[..., 2] < UP_NORMAL)

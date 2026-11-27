@@ -116,13 +116,18 @@ def cmd_check(a) -> int:
 
     data = read_instruction(a.instruction)
     findings = check_instruction(data, a.instruction)
-    questions = pick_questions(findings, a.questions, answered(data, background_folder(data, Path(a.instruction).resolve())))
+    done = answered(data, background_folder(data, Path(a.instruction).resolve()))
+    questions = pick_questions(findings, a.questions, done)
+    # A finding whose question was answered still stands in the instruction as written: said so, since its words
+    # (what the tool does when nobody says) no longer hold.
+    findings = [{**f, "answered": True} if "question" in f and f"{f['shot']}:{f['path']}" in done else f for f in findings]
     if a.json:
         _print({"findings": findings, "questions": questions}, True)
     else:
         marks = {"error": "✗", "warn": "!", "info": "・"}
         for f in findings:
-            print(f"{marks[f['level']]} {f['label']} {f['path']}: {f['message']}")
+            told = "（答え済み: 要求の答えを使います）" if f.get("answered") else ""
+            print(f"{marks[f['level']]} {f['label']} {f['path']}: {f['message']}{told}")
         if not findings:
             print("点検: 問題なし")
         for q in questions:
@@ -207,6 +212,7 @@ def cmd_top(a) -> int:
     from .plan import build_develop_plan
     from .requirement import current, effective, read_requirement
     from .top import top_words, write_top
+    from .town import beyond
 
     data = read_instruction(a.instruction)
     folder = _folder(a, data)
@@ -239,6 +245,14 @@ def cmd_top(a) -> int:
             meshes = [o for o in bscene.add_place(plan["place"]).all_objects if o.type == "MESH"]
             cut = bmeasure.indoor_cut(plan["camera"]["positionM"])
             outlines = bmeasure.footprints(meshes, cut["cutM"] if cut else None)
+            if (plan.get("surroundings") or {}).get("kind") == "town":
+                # The town as it will be built: beyond what the place holds.
+                plan["surroundings"] = beyond(
+                    plan["surroundings"],
+                    bscene.standing_points(meshes),
+                    plan["camera"]["positionM"][:2],
+                    grounds=bscene.ground_rects(meshes),
+                )
         written = write_top(folder, plan, outlines, cut=cut)
         out.append({"shot": plan["shot"], "label": plan["label"], "svg": written["svg"], "json": written["json"], "top": written["top"]})
         if not a.json:

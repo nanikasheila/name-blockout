@@ -22,6 +22,7 @@ from html import escape
 from pathlib import Path
 
 from .sizes import usual_size
+from .town import rect, town_words
 
 FORMAT = "name-blockout/top"
 TOP_DIR = "俯瞰図"
@@ -44,6 +45,8 @@ WALL_WORDS = {"back": "奥", "left": "左", "right": "右", "front": "手前"}
 UNUSUAL = 3.0
 #: Which way north is, by its axis.
 NORTH_DIR = {"+X": (1.0, 0.0), "-X": (-1.0, 0.0), "+Y": (0.0, 1.0), "-Y": (0.0, -1.0)}
+#: The drawing reaches as far as this many of a town's nearest houses.
+TOWN_SHOWN = 12
 #: A place's things are named on the drawing when they are at least this wide on it (px).
 NAME_FROM_PX = 14
 #: …and parts that mean the same (バン) within this of each other get one name (px).
@@ -167,6 +170,9 @@ def build_top(plan: dict, outlines: list[dict] | None = None, cut: dict | None =
         seen = [math.hypot(q[0] - pos[0], q[1] - pos[1]) for q in _outline_points(o) if in_view(q)]
         if seen and not o.get("ground"):
             far.append(min(max(seen), MAX_REACH / BEYOND))
+    # The town round the place: as far as its nearest houses, so the drawing shows where it starts.
+    town_made = plan.get("surroundings") or {}
+    far += [h["distanceM"] + max(h["sizeM"][:2]) / 2 for h in (town_made.get("houses") or [])[:TOWN_SHOWN]]
     reach = min(MAX_REACH, max(MIN_REACH, max(far) * BEYOND)) if far else DEFAULT_REACH
     if cut and cut.get("roomReachM"):
         # Indoors the drawing is of the room: as far as its furthest wall, not the garden beyond it.
@@ -232,11 +238,34 @@ def build_top(plan: dict, outlines: list[dict] | None = None, cut: dict | None =
             else None
         ),
         "place": ({"asset": place.get("name"), "outlines": outlines, "outlinesKnown": bool(outlines), "cut": cut} if place else None),
+        "surroundings": _around(plan.get("surroundings"), bool(place) and not outlines),
         "sun": {"towardDeg": bearing(toward_sun), "elevationDeg": sun.get("elevationDeg")} if toward_sun else None,
         "north": {"axis": light["north"], "assumed": "look.north" in assumed} if light.get("north") in NORTH_DIR else None,
         "assumptions": assumed,
     }
     return top
+
+
+def _around(made: dict | None, place_unread: bool) -> dict | None:
+    """The town round the place for the drawing: each house's corners, and what else stands there. `place_unread`:
+    the place's contents were not read (no Blender), so the houses that would stand on them are still in."""
+    if not made or made.get("kind") != "town":
+        return None
+    return {
+        "kind": "town",
+        "words": town_words(made) + ("（場所の中身を読むと、場所に重なる家は外れます）" if place_unread else ""),
+        "houses": [
+            {"id": h["id"], "rectM": rect(h), "heightM": h["sizeM"][2], "roof": h["roof"], "distanceM": h["distanceM"]}
+            for h in made["houses"]
+        ],
+        "trees": [[t["centreM"][0], t["centreM"][1], t["radiusM"]] for t in made["trees"]],
+        "poles": [p["centreM"][:2] for p in made["poles"]],
+        "street": made.get("street"),
+        "streetM": made.get("streetM"),
+        "streets": made.get("streets") or [],
+        "reachM": made["reachM"],
+        "dropped": made.get("dropped"),
+    }
 
 
 # --- words ----------------------------------------------------------------------------------------
@@ -283,6 +312,8 @@ def top_words(top: dict) -> list[str]:
         if cut and place["outlinesKnown"]:
             known += f"・床から {cut['cutM'] - cut['floorM']:.1f} m の高さで切った間取り。太い線が壁、それより上の屋根・天井は描いていない"
         out.append(f"場所: {place['asset']}（{known}）")
+    if top.get("surroundings"):
+        out.append(top["surroundings"]["words"])
     out += [thing_words(t) for t in top["things"]]
     if top.get("sun"):
         out.append(
@@ -463,6 +494,33 @@ def to_svg(top: dict) -> str:
         grid.append(f'<line x1="{x1:.1f}" y1="{y1:.1f}" x2="{x2:.1f}" y2="{y2:.1f}"/>')
         k += 1
     out.append(f'<g stroke="#e3e3e3" stroke-width="1">{"".join(grid)}</g>')
+
+    # The town round the place: its houses (square to the grid), garden trees and poles, lightly.
+    around = top.get("surroundings")
+    if around:
+        # Its streets' lines, right through the place: where the place has a road of its own, one of them should
+        # lie on it (surroundings.street).
+        for street in around.get("streets") or []:
+            a, b = (
+                ((street["fromM"], street["atM"]), (street["toM"], street["atM"]))
+                if street["axis"] == "X"
+                else ((street["atM"], street["fromM"]), (street["atM"], street["toM"]))
+            )
+            (x0, y0), (x1, y1) = px(a), px(b)
+            out.append(
+                f'<line x1="{x0:.1f}" y1="{y0:.1f}" x2="{x1:.1f}" y2="{y1:.1f}" stroke="#ece7dc" '
+                f'stroke-width="{max(1.0, street.get("widthM", around["streetM"]) * scale):.1f}" stroke-opacity="0.7"/>'
+            )
+        for house in around["houses"]:
+            out.append(f'<polygon points="{pts(house["rectM"])}" fill="#f3ead8" stroke="#b9a377" stroke-width="1"/>')
+        for x, y, r in around["trees"]:
+            tx, ty = px((x, y))
+            out.append(
+                f'<circle cx="{tx:.1f}" cy="{ty:.1f}" r="{max(2.0, r * scale):.1f}" fill="#e3ecd9" stroke="#a9b99a" stroke-width="1"/>'
+            )
+        for x, y in around["poles"]:
+            tx, ty = px((x, y))
+            out.append(f'<circle cx="{tx:.1f}" cy="{ty:.1f}" r="2" fill="#8a8a8a"/>')
 
     # What a place holds: under everything else. Seen whole from above, each thing by its outline; cut as a floor
     # plan, what stands below the cut by its outline and the cut itself (the walls) in a heavy line.

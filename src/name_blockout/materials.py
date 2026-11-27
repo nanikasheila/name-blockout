@@ -179,6 +179,23 @@ PLACE_WORDS = {
 }
 #: The materials whose things are drawn by their outline only (the pen does not go into a crown's facets).
 FOLIAGE = ("草",)
+#: Words in the names of natural things in a place (besides whatever has leaves): told by their shade, not by an
+#: outline (lines.py).
+NATURAL_WORDS = ("tree", "trunk", "bark", "bush", "shrub", "hedge", "plant", "rock", "boulder", "木", "幹", "植栽", "岩")
+#: In a plant that has leaves, the parts of these materials are its own (leaves, wood); a part whose material's
+#: name says something else (a pot's concrete, a stake's metal) is a made thing and keeps its lines.
+NATURAL_MATERIALS = ("草", "木")
+
+
+def natural_parts(names: list[str]) -> list[bool]:
+    """For a natural thing's material slots (their names): which are natural. All of them, unless the thing has
+    leaves and a slot's own name says a made material (a potted plant: the pot)."""
+    own = [guess_part(n) if n else DEFAULT for n in names]
+    if not any(g in FOLIAGE for g in own):
+        return [True] * len(names)
+    return [g in NATURAL_MATERIALS or g == DEFAULT or any(w in (n or "").lower() for w in NATURAL_WORDS) for n, g in zip(names, own)]
+
+
 #: Words of things too fine to draw line by line at a name's size (a solar panel's cells, a louvre): their outline
 #: only, the rest left to the tone.
 FINE_WORDS = ("solar", "louver", "louvre", "grating", "grille", "mesh", "ソーラー", "ルーバー")

@@ -25,6 +25,7 @@ from .shapes import KIND_LABELS as SHAPE_LABELS
 from .shapes import kind_of, shape_of
 from .sizes import usual_size
 from .solve import DEFAULT_FIGURE_M, fit_box, fit_figure, place_box
+from .town import beyond, town
 
 PREVIEW_DPI = 150
 #: A thing placed on the top view that fills less than this of its range on the panel is noted (IoU).
@@ -200,6 +201,15 @@ def build_plan(
                         f"全天球の画像「{layer['name']}」は幅 {size[0]}px: {dpi_name}（{dpi_value:g}dpi）には {need}px 要るので粗く見えます"
                     )
                     break
+    # What lies round the place: a town laid on the ground beyond it, clear of the author's own things (the
+    # place's contents are kept clear of when it is built: they are in its .blend).
+    around = None
+    about = shot.get("surroundings") or {}
+    if about.get("kind") == "town":
+        around = town(camera, about)
+        own = [q for item in objects + figures for q in _corners(item["placed"])]
+        if own:
+            around = beyond(around, own, camera.position[:2])
     room = None
     spec = None if use_place else room_of(shot)
     if spec is not None:
@@ -243,6 +253,7 @@ def build_plan(
         "objects": objects,
         "figures": figures,
         "far": far,
+        "surroundings": around,
         "credits": _credits(used),
         "targets": t,
         "hashes": {**hashes(shot), "objects": object_hashes(shot)},
@@ -250,6 +261,14 @@ def build_plan(
         "notes": notes + camera.notes,
     }
     return plan
+
+
+def _corners(placed: dict) -> list[tuple[float, float]]:
+    """A placed thing's four corners on the ground."""
+    (x, y), (w, d) = placed["centreM"][:2], placed["sizeM"][:2]
+    if placed.get("along") == "Y":
+        w, d = d, w
+    return [(x - w / 2, y - d / 2), (x + w / 2, y - d / 2), (x + w / 2, y + d / 2), (x - w / 2, y + d / 2)]
 
 
 def _asset_entry(asset: Asset, folder: Path | None) -> dict:
