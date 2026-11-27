@@ -246,9 +246,7 @@ def camera_words(top: dict) -> str:
     look = "水平" if abs(tilt) < 0.5 else (f"見下ろし {tilt:.0f}°" if tilt > 0 else f"見上げ {-tilt:.0f}°")
     view = f"・横の画角 {cam['viewDeg']:.0f}°" if cam.get("viewDeg") else ""
     x, y = cam["positionM"]
-    return (
-        f"カメラ: 位置 ({x:.1f}, {y:.1f})・向き {cam['headingDeg']:.0f}°・高さ {cam['heightM']:.2f} m・{cam['lensMm']:.0f} mm・{look}{view}"
-    )
+    return f"カメラ: 位置 ({x:.1f}, {y:.1f})・向き {round(cam['headingDeg']) % 360}°・高さ {cam['heightM']:.2f} m・{cam['lensMm']:.0f} mm・{look}{view}"
 
 
 def thing_words(t: dict) -> str:
@@ -295,6 +293,74 @@ def top_words(top: dict) -> list[str]:
 
 # --- drawing --------------------------------------------------------------------------------------
 
+#: What the names in a place's file usually mean (the first word found in a name is written before it).
+PLACE_WORDS = (
+    ("plant", "植栽"),
+    ("tree", "木"),
+    ("hedge", "生け垣"),
+    ("furniture", "家具"),
+    ("sofa", "ソファ"),
+    ("table", "机"),
+    ("chair", "椅子"),
+    ("bed", "ベッド"),
+    ("kitchen", "台所"),
+    ("pendant", "照明"),
+    ("lamp", "照明"),
+    ("light", "照明"),
+    ("glass", "ガラス"),
+    ("window", "窓"),
+    ("door", "ドア"),
+    ("stair", "階段"),
+    ("gate", "門"),
+    ("fence", "柵"),
+    ("wall", "塀・壁"),
+    ("roof", "屋根"),
+    ("solar", "ソーラーパネル"),
+    ("terrace", "テラス"),
+    ("deck", "デッキ"),
+    ("pool", "プール"),
+    ("road", "道"),
+    ("van", "バン"),
+    ("truck", "トラック"),
+    ("car", "車"),
+    ("shell", "建物"),
+    ("house", "家"),
+    ("building", "建物"),
+    ("lawn", "芝"),
+    ("ground", "地面"),
+)
+
+
+def place_word(name: str) -> str:
+    """A place's thing as it is named on the drawing: what its name means, then the name in its file."""
+    low = name.lower()
+    for word, means in PLACE_WORDS:
+        if word in low:
+            return f"{means}（{name}）"
+    return name
+
+
+def _inside(ring: list) -> tuple[float, float]:
+    """A spot well inside a ring to write its name on: the middle of its widest stretch across, at a few heights
+    (the middle of the box around an L or a C is outside it)."""
+    ys = [q[1] for q in ring]
+    y0, y1 = min(ys), max(ys)
+    best = None
+    for share in (0.5, 0.35, 0.65, 0.15, 0.85):
+        y = y0 + (y1 - y0) * share
+        cuts = []
+        for (ax, ay), (bx, by) in zip(ring, ring[1:] + ring[:1]):
+            if (ay <= y) != (by <= y):
+                cuts.append(ax + (bx - ax) * (y - ay) / (by - ay))
+        cuts.sort()
+        for a, b in zip(cuts[::2], cuts[1::2]):
+            if best is None or b - a > best[0] * 1.15:
+                best = (b - a, (a + b) / 2, y)
+    if best is None:
+        xs = [q[0] for q in ring]
+        return (min(xs) + max(xs)) / 2, (y0 + y1) / 2
+    return best[1], best[2]
+
 
 def _grid_step(span: float) -> float:
     for limit, step in ((30.0, 1.0), (150.0, 5.0), (400.0, 10.0)):
@@ -315,6 +381,11 @@ def to_svg(top: dict) -> str:
         return (dx * rx + dy * ry, -(dx * lx + dy * ly))
 
     points = [(0.0, 0.0)] + [page(q) for q in top["groundSeenM"]]
+    # As far as the drawing reaches along the angle of view (a camera looking down sees the floor only near it,
+    # but the room goes on to its far wall).
+    for deg in [d for d in (cam.get("edgesDeg") or []) if d is not None]:
+        points.append(page((cx + math.cos(math.radians(deg)) * top["reachM"], cy + math.sin(math.radians(deg)) * top["reachM"])))
+    points.append((0.0, -top["reachM"]))
     for t in top["things"]:
         points += [page(q) for q in t["footprintM"]]
     if top.get("room"):
@@ -492,11 +563,11 @@ def to_svg(top: dict) -> str:
                 on = [px(q) for q in ring]
                 x0, x1 = min(q[0] for q in on), max(q[0] for q in on)
                 y0, y1 = min(q[1] for q in on), max(q[1] for q in on)
-                mx, my = (x0 + x1) / 2, (y0 + y1) / 2
                 if max(x1 - x0, y1 - y0) < NAME_FROM_PX:
                     break  # the rings come largest first
+                mx, my = _inside(on)
                 if 0 <= mx <= width and 0 <= my <= height:
-                    out.append(name(mx, my + 4, o["name"]))
+                    out.append(name(mx, my + 4, place_word(o["name"])))
                     break
 
     # The camera: where it stands, and its angle of view.

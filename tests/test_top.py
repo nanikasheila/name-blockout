@@ -10,7 +10,7 @@ from pathlib import Path
 from name_blockout.cli import main
 from name_blockout.instruction import read_instruction
 from name_blockout.plan import build_develop_plan, build_plan
-from name_blockout.top import build_top, to_svg, top_words
+from name_blockout.top import _inside, build_top, place_word, to_svg, top_words
 
 EXAMPLES = Path(__file__).resolve().parents[1] / "examples"
 TWO_POINT = EXAMPLES / "two-point" / "指示.json"
@@ -172,7 +172,7 @@ def test_a_place_is_drawn_by_its_true_shapes_and_indoors_as_a_floor_plan():
     top = build_top(plan, outlines)
     svg = to_svg(top)
     assert svg.count('fill-rule="evenodd"') == 2 and svg.count(" Z M ") == 1
-    assert top["reachM"] > 30 and "plants" in svg and "shell" in svg
+    assert top["reachM"] > 30 and "植栽（plants）" in svg and "建物（shell）" in svg
     assert "間取り" not in "\n".join(top_words(top))
     # Cut as a floor plan: the walls in a heavy line, the drawing no further than the room.
     cut = {"floorM": 0.3, "ceilingM": 2.9, "cutM": 1.5, "roomReachM": 7.0}
@@ -202,3 +202,28 @@ def test_names_keep_clear_of_each_other():
             spots.add(line.split('y="')[1].split('"')[0])
     # Eight names on one spot: the ones with room are each on their own line, the rest left out.
     assert 2 <= len(spots) <= 5 and len(spots) == sum(f">thing_{i}<" in svg for i in range(8))
+
+
+def test_a_name_is_written_inside_its_shape_and_says_what_it_means():
+    # A C-shaped hedge around a house: the middle of the box around it is the house, not the hedge.
+    c_shape = [(0, 0), (10, 0), (10, 2), (2, 2), (2, 8), (10, 8), (10, 10), (0, 10)]
+    x, y = _inside(c_shape)
+    assert (x < 2 and 2 <= y <= 8) or y < 2 or y > 8
+    assert place_word("site2_walls") == "塀・壁（site2_walls）" and place_word("van_body") == "バン（van_body）"
+    assert place_word("future") == "future"
+
+
+def test_the_drawing_reaches_as_far_as_the_view_does():
+    """A camera looking down sees the floor only near it; the drawing still goes as far as the room's far wall."""
+    plan = copy.deepcopy(_plan(develop=True))
+    plan["place"] = {"name": "家", "file": "x.blend"}
+    plan["objects"], plan["figures"] = [], []
+    plan["camera"]["positionM"][2] = 2.6
+    top = build_top(plan, [], {"floorM": 0.0, "ceilingM": 3.4, "cutM": 1.2, "roomReachM": 10.7})
+    assert abs(top["reachM"] - 10.7 * 1.2) < 0.01
+    svg = to_svg(top)
+    step = float(svg.split("1 マス ")[1].split(" m")[0])
+    bar = float(svg.split('<path d="M 22 ')[1].split(" h ")[1].split(" ")[0])
+    height = float(svg.split('<clipPath id="map"><rect width="')[1].split('height="')[1].split('"')[0])
+    # The page is tall enough for the reach at its scale.
+    assert height >= top["reachM"] * bar / step
